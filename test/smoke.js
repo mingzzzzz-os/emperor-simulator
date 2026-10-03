@@ -183,6 +183,38 @@ assert(!!S.currentScene, '进入教导场景');
 Game.resolveSceneFree('和她聊聊为君之道，听听她的想法');
 assert(heir0.zhi > hz, '谈为君之道→皇嗣智上升 '+hz+'→'+heir0.zhi);
 
+console.log('▶ 5.9 纳入后宫新人（harem_add + persona剧情）');
+S = Game.S; S.busy=false; S.pendingEvent=null; S.actedThisTurn=0; S.pickedActions=[]; S.jingshen=60;
+const haremN0 = S.harem.length;
+Game.applyDeltas([{k:'harem_add:qingya', v:1, r:'测试纳入'}]);
+assert(S.harem.length === haremN0+1, '后宫人数+1，实际'+S.harem.length);
+const newM = S.harem[S.harem.length-1];
+assert(newM.persona === 'qingya' && newM.age >= 18, '新人成年且有persona：'+newM.name+' '+newM.age+'岁');
+// 入后宫可选到新人并触发persona专属剧情
+Game.pickAction(4);
+const nOpts = S.pendingPicker.options;
+const nIdx = nOpts.findIndex(o=>o.label.includes(newM.name));
+assert(nIdx >= 0, '新人出现在去处列表');
+Game.pickSceneTarget(nIdx);
+assert(!!S.currentScene && S.currentScene.memberId === newM.id, '进入新人专属剧情（memberId已绑定）');
+// 调戏：宠爱上升，且叙述为调戏口径
+const mf0 = newM.favor;
+Game.resolveSceneFree('过来让朕好好瞧瞧你，逗逗你');
+assert(newM.favor > mf0, '调戏→新人宠爱上升 '+mf0+'→'+newM.favor);
+const teaseCard = cards.filter(c=>c.startsWith('[action:入后宫 · 结果]')).pop();
+assert(/逗|调戏|无措|耳尖|脸红/.test(teaseCard), '调戏结果叙述应为调戏口径，实际：'+teaseCard);
+
+console.log('▶ 5.10 艳遇事件纳入后宫');
+const evY = DATA.events.find(e=>e.type==='艳遇');
+assert(!!evY, '艳遇事件存在');
+S = Game.S; S.busy=false; S.pendingEvent=null;
+S.pendingEvent = JSON.parse(JSON.stringify(evY));
+const yn0 = S.harem.length;
+Game.resolveEvent('温言问明底细，纳入后宫');
+assert(S.harem.length === yn0+1, '艳遇事件纳入新人，实际'+S.harem.length);
+await sleep(80);
+await drainPetitions();
+
 console.log('▶ 6. 长程模拟 150 回合稳定性');
 let err = null;
 try {

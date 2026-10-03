@@ -49,7 +49,20 @@ const Game = {
       const { k, v, r } = d;
       let label = this.attrLabel(k), shown = v, npcName = '', heirName = '';
 
-      if (k.startsWith('npc:')) {
+      if (k.startsWith('harem_add:')) {
+        // 纳入后宫：新增成员（卡片由 addHaremMember 推送）
+        const m = this.addHaremMember(k.split(':')[1]);
+        if (m && !silent) chips.push({ text:`${m.name}·封${m.rank}`, up:true, reason:r });
+        continue;
+      } else if (k.startsWith('npc_member:')) {
+        // 指向当前场景对象（新人剧情用）
+        const field = k.split(':')[1];
+        const id = (S.currentScene||{}).memberId;
+        const t = id ? this.npc(id) : null; if (!t) continue;
+        t[field] = this.clamp((t[field]||0) + v);
+        npcName = t.name;
+        label = this.attrLabel(field);
+      } else if (k.startsWith('npc:')) {
         const [, id, field] = k.split(':');
         const t = this.npc(id); if (!t) continue;
         t[field] = this.clamp((t[field]||0) + v);
@@ -204,14 +217,19 @@ const Game = {
       this.presentScene(pk.actionId, this.rand(def.pool._heir), opt.key);
       return;
     }
-    const plist = def.pool[opt.key];
+    let plist = def.pool[opt.key];
+    if (!plist && pk.actionId === 4) {
+      // 新人：按 persona 匹配专属剧情池
+      const hm = S.harem.find(h=>h.id===opt.key);
+      if (hm && hm.persona) plist = def.pool['_persona:'+hm.persona];
+    }
     if (!plist || !plist.length) {
       S.busy = false;
       UI.pushCard('sys', '今夜不巧，那边宫门已闭，你折返了回去。');
       UI.setDockMode('actions'); UI.renderAll();
       return;
     }
-    this.presentScene(pk.actionId, this.rand(plist), null);
+    this.presentScene(pk.actionId, this.rand(plist), null, pk.actionId===4 ? opt.key : null);
   },
 
   pickSceneTargetFree(text) {
@@ -240,10 +258,10 @@ const Game = {
     UI.setDockMode('actions'); UI.renderAll();
   },
 
-  presentScene(actionId, scene, heirId) {
+  presentScene(actionId, scene, heirId, memberId) {
     const S = this.S;
     S.busy = true;
-    S.currentScene = { actionId, scene, heirId };
+    S.currentScene = { actionId, scene, heirId, memberId: memberId||null };
     const text = typeof scene.text === 'function' ? scene.text(S) : scene.text;
     UI.pushActionCard(DATA.actions.find(a=>a.id===actionId).name, text, null);
     const choices = typeof scene.choices === 'function' ? scene.choices(S) : scene.choices;
@@ -299,6 +317,33 @@ const Game = {
     else UI.toast(`本回合还可选择 ${3 - S.actedThisTurn} 项行动`);
   },
 
+  /* ─────── 纳入后宫：良家郎君入宫 ─────── */
+  addHaremMember(archId) {
+    const S = this.S, arch = (DATA.haremArchetypes||{})[archId];
+    if (!arch) return null;
+    const avail = arch.names.filter(n=>!S.harem.some(h=>h.name===n));
+    if (!avail.length) return null;
+    const name = this.rand(avail);
+    const m = {
+      id:'hm_'+archId+'_'+Date.now()+Math.floor(Math.random()*99),
+      name, gender:'男',
+      age: arch.age[0] + Math.floor(Math.random()*(arch.age[1]-arch.age[0]+1)),
+      rank: arch.rank, role: arch.rank, tag:'harem',
+      trait: arch.trait, family: arch.family, intro: arch.intro,
+      persona: arch.persona,
+      favor: 30+Math.floor(Math.random()*12),
+      ambition: 8+Math.floor(Math.random()*18),
+      cold:false, isNew:true,
+    };
+    S.harem.push(m);
+    S.hougong = this.clamp(S.hougong + 2);
+    UI.pushCard('npc',
+      `🌸 <b>新人入宫</b>：${m.name}，${m.age}岁，${arch.family}。${arch.intro}<br>` +
+      `封为<b>${m.rank}</b>，拨宫人两名、月例从才人格。六宫的风，从此又变了一变。`, '');
+    this.save();
+    return m;
+  },
+
   /* ─────── 自由批复语义解析 ─────── */
   /* 把玩家的话拆成意图（按强度排序） */
   analyzeIntent(text) {
@@ -324,13 +369,18 @@ const Game = {
   },
 
   npcAttitudeField(npcId) {
-    return ['shenqingxian','xielanyin','jiangxuelou','peijing'].includes(npcId) ? 'favor' : 'loyal';
+    const p = this.npc(npcId);
+    if (p && p.favor !== undefined) return 'favor';  // 后宫成员用宠爱
+    return 'loyal';                                   // 朝臣用忠心
   },
 
-  /* 从剧情文本里找涉及的人物（取最先出现者） */
+  /* 从剧情文本里找涉及的人物（静态称呼表 + 当前在册的朝臣/后宫名） */
   sceneNpcId(text) {
     let found = null, pos = Infinity;
-    for (const [title, id] of DATA.freeIntents.npcTitles) {
+    const all = DATA.freeIntents.npcTitles.concat(
+      (this.S ? this.S.harem.concat(this.S.courtiers) : []).map(p=>[p.name, p.id])
+    );
+    for (const [title, id] of all) {
       const i = String(text).indexOf(title);
       if (i >= 0 && i < pos) { pos = i; found = id; }
     }
@@ -370,10 +420,19 @@ const Game = {
       }
       const pool = DATA.freeIntents.lines[top.name];
       if (pool) parts.push(this.rand(pool));
-      // 涉及人物时，按其性格给出反应（受益/受损/中性）
+      // 涉及人物时，按其性格给出反应（调戏有专属口径；新人按persona回退）
       if (ctx.npcId) {
-        const pol = DATA.freeIntents.polarity[top.name] || 'neutral';
-        const reacts = ((DATA.freeIntents.reacts||{})[ctx.npcId]||{})[pol];
+        const person = this.npc(ctx.npcId) || {};
+        let reacts = null;
+        if (top.name === 'tease') {
+          reacts = (DATA.freeIntents.teaseReacts||{})[ctx.npcId]
+                || (person.persona ? DATA.freeIntents.teaseReacts['_'+person.persona] : null);
+        }
+        if (!reacts) {
+          const pol = DATA.freeIntents.polarity[top.name] || 'neutral';
+          reacts = ((DATA.freeIntents.reacts||{})[ctx.npcId]||{})[pol]
+                || (person.persona ? (((DATA.freeIntents.personaReacts||{})[person.persona]||{})[pol]) : null);
+        }
         if (reacts) parts.push(this.rand(reacts));
       }
     } else {
@@ -431,6 +490,7 @@ const Game = {
     let pool = DATA.events.filter(e=>{
       if (e.type==='皇嗣夺嫡') return S.heirs.length>=1 && S.year>=2;
       if (e.type==='藩王异动') return S.vassals.length>=1;
+      if (e.type==='艳遇') return S.harem.length<=8;
       return true;
     });
     const ev = JSON.parse(JSON.stringify(this.rand(pool)));
