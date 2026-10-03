@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>帝王模拟器 · 千秋</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600;700;900&family=Ma+Shan+Zheng&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- ══════════ 开场 ══════════ -->
+<div id="screen-welcome" class="screen">
+  <div class="welcome-bg"></div>
+  <div class="welcome-inner">
+    <div class="welcome-seal">帝</div>
+    <h1 class="welcome-title">帝王模拟器</h1>
+    <p class="welcome-sub">—— 千秋 · 一代帝王的江山岁月 ——</p>
+    <p class="welcome-desc">临朝听政 · 制衡权臣 · 经营后宫 · 教养皇嗣 · 传承帝位<br>你的每一个抉择，都将写入国史。</p>
+    <div class="welcome-btns">
+      <button class="btn btn-primary btn-lg" id="btn-new-game">新的征程</button>
+      <button class="btn btn-ghost btn-lg hidden" id="btn-continue">继续前朝</button>
+    </div>
+    <p class="welcome-tip">灵感源自《模拟人生》式人生模拟 · 纯文字演绎 · 多代传承</p>
+  </div>
+</div>
+
+<!-- ══════════ 开局向导（一问一答） ══════════ -->
+<div id="screen-setup" class="screen hidden">
+  <div class="setup-panel">
+    <div class="setup-head">
+      <span class="setup-title">登基大典 · 确认皇帝信息</span>
+      <span class="setup-progress" id="setup-progress"></span>
+    </div>
+    <div class="setup-chat" id="setup-chat"></div>
+    <div class="setup-inputbar" id="setup-inputbar">
+      <input type="text" id="setup-input" placeholder="请输入回答，回车确认…" autocomplete="off">
+      <button class="btn btn-primary" id="setup-send">确认</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ 主游戏界面 ══════════ -->
+<div id="screen-game" class="screen hidden">
+
+  <!-- 顶栏：时间 + 国力 -->
+  <header id="topbar">
+    <div class="time-block">
+      <div class="time-era" id="ui-era">元年</div>
+      <div class="time-date" id="ui-date">第1年 第1月</div>
+      <div class="time-turn" id="ui-turn">本回合行动 0/3</div>
+    </div>
+    <div class="resource-bar" id="ui-resources"></div>
+    <div class="top-actions">
+      <button class="icon-btn" id="btn-save" title="存档">存</button>
+      <button class="icon-btn" id="btn-restart" title="重开">↺</button>
+    </div>
+  </header>
+
+  <main id="game-main">
+    <!-- 左栏：帝王面板 -->
+    <aside id="panel-emperor">
+      <div class="emp-card">
+        <div class="emp-avatar" id="ui-avatar">帝</div>
+        <div class="emp-name" id="ui-emp-name">—</div>
+        <div class="emp-meta" id="ui-emp-meta">—</div>
+        <div class="emp-tags" id="ui-emp-tags"></div>
+      </div>
+      <div class="panel-box">
+        <div class="panel-title">帝王属性</div>
+        <div id="ui-attrs"></div>
+      </div>
+      <div class="panel-box">
+        <div class="panel-title">未结事件</div>
+        <div id="ui-unresolved" class="unresolved-list"></div>
+      </div>
+    </aside>
+
+    <!-- 中栏：叙事流 + 操作区 -->
+    <section id="panel-story">
+      <div id="story-flow"></div>
+      <div id="action-dock">
+        <!-- 行动选择模式 -->
+        <div id="dock-actions">
+          <div class="dock-hint">请选择本回合 <b>3</b> 项行动（已选 <span id="dock-picked">0</span>/3），也可直接输入想做之事：</div>
+          <div class="action-grid" id="action-grid"></div>
+          <div class="free-inputbar">
+            <input type="text" id="free-input" placeholder="自由指令：如「召萧破军入宫，试探其忠心」…" autocomplete="off">
+            <button class="btn btn-primary" id="free-send">执行</button>
+          </div>
+        </div>
+        <!-- 事件处置模式 -->
+        <div id="dock-event" class="hidden">
+          <div class="dock-hint event-hint">⚠ 请对此事件作出处置（自由描述你的决定），此事没有唯一真相：</div>
+          <div class="free-inputbar">
+            <input type="text" id="event-input" placeholder="如：下令彻查 / 从轻发落 / 斩立决 / 暗中观察…" autocomplete="off">
+            <button class="btn btn-danger" id="event-send">下旨</button>
+          </div>
+        </div>
+        <!-- 选项模式 -->
+        <div id="dock-choices" class="hidden">
+          <div class="choice-list" id="choice-list"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 右栏：人物 -->
+    <aside id="panel-people">
+      <div class="people-tabs" id="people-tabs">
+        <button class="ptab active" data-tab="court">朝臣</button>
+        <button class="ptab" data-tab="harem">后宫</button>
+        <button class="ptab" data-tab="heir">皇嗣</button>
+        <button class="ptab" data-tab="vassal">藩王</button>
+        <button class="ptab" data-tab="history">国史</button>
+      </div>
+      <div class="people-list" id="people-list"></div>
+    </aside>
+  </main>
+</div>
+
+<!-- ══════════ 结局画面 ══════════ -->
+<div id="screen-ending" class="screen hidden">
+  <div class="ending-panel" id="ending-panel"></div>
+</div>
+
+<div id="toast-wrap"></div>
+
+<script src="js/data.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/ui.js"></script>
+</body>
+</html>
