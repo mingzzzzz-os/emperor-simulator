@@ -1,6 +1,7 @@
 /* ═══════════ 帝王模拟器 · 游戏引擎 ═══════════ */
 
 const SAVE_KEY = 'emperor_sim_save_v1';
+const SAVE_CODE_TAG = 'EMPSAVE1';   // 存档码前缀（版本标识）
 
 const Game = {
   /* ─────── 状态 ─────── */
@@ -889,13 +890,131 @@ const Game = {
   load(){
     try{
       const s = localStorage.getItem(SAVE_KEY); if(!s) return false;
-      this.S = JSON.parse(s);
-      // 读档时重置一切进行中的决策状态，避免流程卡死
-      this.S.busy = false; this.S.pendingPicker = null;
-      this.S.currentScene = null; this.S.currentPetition = null; this.S.npcQueue = [];
+      // 归一化：重置进行中的决策状态，避免读档后流程卡死
+      this.S = this._normalizeSave(JSON.parse(s));
       return true;
     }catch(e){ return false; }
   },
   clearSave(){ localStorage.removeItem(SAVE_KEY); },
   hasSave(){ return !!localStorage.getItem(SAVE_KEY); },
+
+  /* ═══════════ 存档搬运（跨设备） ═══════════
+     存档写在 localStorage 里，只属于当前设备的当前浏览器。
+     想换设备接着玩，就把存档「打包成一段存档码」带走，在新设备上导入。 */
+
+  /* 导出用的纯净快照：倒回到最近一个「可继续」的节点，避免把半截流程带出去 */
+  snapshot() {
+    const plain = JSON.parse(JSON.stringify(this.S));
+    plain.busy = false; plain.pendingPicker = null;
+    plain.currentScene = null; plain.currentPetition = null; plain.npcQueue = [];
+    // 若正卡在月末事件处置中：退回一步，让新设备能重新择一项行动、重新触发事件
+    if (plain.pendingEvent) {
+      plain.pendingEvent = null;
+      plain.actedThisTurn = Math.max(0, (plain.actedThisTurn || 0) - 1);
+      if (Array.isArray(plain.pickedActions) && plain.pickedActions.length > plain.actedThisTurn)
+        plain.pickedActions = plain.pickedActions.slice(0, plain.actedThisTurn);
+    }
+    return plain;
+  },
+
+  /* 状态 → 存档码（优先 deflate-raw 压缩；压不了就退化成纯 base64，仍可导入） */
+  async packSave() {
+    const json = JSON.stringify(this.snapshot());
+    const bytes = new TextEncoder().encode(json);
+    if (typeof CompressionStream === 'function') {
+      try {
+        const packed = await this._deflate(bytes);
+        const cand = SAVE_CODE_TAG + 'Z' + this._bytesToB64(packed);
+        const back = await this.unpackSave(cand);   // 自检：解得回来才用它
+        if (back && back.turnCount === this.S.turnCount) return cand;
+      } catch (e) { /* 落到下面的纯 base64 */ }
+    }
+    return SAVE_CODE_TAG + 'P' + this._bytesToB64(bytes);
+  },
+
+  /* 存档码 → 状态对象（校验失败直接抛出，由调用方给出提示） */
+  async unpackSave(code) {
+    const t = String(code == null ? '' : code).trim();
+
+    // 兼容直接粘贴的原始 JSON
+    if (t.charAt(0) === '{') return this._normalizeSave(JSON.parse(t));
+
+    const flat = t.replace(/\s+/g, '');
+    if (flat.indexOf(SAVE_CODE_TAG) !== 0) throw new Error('这不像是一段存档码，请检查是否复制完整。');
+    const mode = flat.charAt(SAVE_CODE_TAG.length);
+    const payload = flat.slice(SAVE_CODE_TAG.length + 1);
+    if (!payload) throw new Error('存档码是空的，请重新复制。');
+
+    let bytes = this._b64ToBytes(payload);
+    if (mode === 'Z') {
+      if (typeof DecompressionStream !== 'function') throw new Error('当前浏览器打不开这种存档码，请换用存档文件导入。');
+      bytes = await this._inflate(bytes);
+    } else if (mode !== 'P') {
+      throw new Error('存档码版本无法识别，可能来自更新的版本。');
+    }
+    return this._normalizeSave(JSON.parse(new TextDecoder().decode(bytes)));
+  },
+
+  /* 校验 + 归一化：补上缺失字段、清掉进行中的决策状态 */
+  _normalizeSave(st) {
+    if (!st || typeof st !== 'object') throw new Error('存档内容无法解析。');
+    if (typeof st.turnCount !== 'number' || !st.name || typeof st.gold !== 'number')
+      throw new Error('存档内容不完整或已损坏。');
+    st.busy = false; st.pendingPicker = null;
+    st.currentScene = null; st.currentPetition = null; st.npcQueue = [];
+    if (st.pendingEvent) {
+      st.pendingEvent = null;
+      st.actedThisTurn = Math.max(0, (st.actedThisTurn || 0) - 1);
+      if (Array.isArray(st.pickedActions) && st.pickedActions.length > st.actedThisTurn)
+        st.pickedActions = st.pickedActions.slice(0, st.actedThisTurn);
+    }
+    if (!Array.isArray(st.unresolved)) st.unresolved = [];
+    if (!Array.isArray(st.history))    st.history = [];
+    if (!Array.isArray(st.heirs))      st.heirs = [];
+    if (!Array.isArray(st.harem))      st.harem = [];
+    if (!Array.isArray(st.vassals))    st.vassals = [];
+    if (!Array.isArray(st.courtiers))  st.courtiers = [];
+    if (!Array.isArray(st.pickedActions)) st.pickedActions = [];
+    if (typeof st.npcQueue === 'undefined') st.npcQueue = [];
+    return st;
+  },
+
+  /* 导入并落盘：覆盖当前进度 */
+  applySave(state) {
+    this.S = state;
+    this.save();
+    return true;
+  },
+
+  /* 存档文件默认文件名 */
+  saveFileName() {
+    const S = this.S;
+    const md = (DATA.monthNames && DATA.monthNames[S.month - 1]) || (S.month + '月');
+    const safe = String(S.name).replace(/[\\/:*?"<>|]/g, '');
+    return `帝王模拟器存档-${safe}-${S.nianhao}${S.year}年${md}-第${S.generation}代.txt`;
+  },
+
+  /* ── 编解码底层 ── */
+  _deflate(bytes) {
+    const st = new Blob([bytes]).stream().pipeThrough(new CompressionStream('deflate-raw'));
+    return new Response(st).arrayBuffer().then(b => new Uint8Array(b));
+  },
+  _inflate(bytes) {
+    const st = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    return new Response(st).arrayBuffer().then(b => new Uint8Array(b));
+  },
+  _bytesToB64(u8) {
+    let s = ''; const CHUNK = 0x8000;
+    for (let i = 0; i < u8.length; i += CHUNK)
+      s += String.fromCharCode.apply(null, u8.subarray(i, i + CHUNK));
+    return btoa(s);
+  },
+  _b64ToBytes(str) {
+    let bin;
+    try { bin = atob(str); }
+    catch (e) { throw new Error('存档码里含有非法字符，请重新完整复制。'); }
+    const u8 = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    return u8;
+  },
 };

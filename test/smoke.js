@@ -293,6 +293,80 @@ assert(S.actedThisTurn === 1, '自由指令映射出巡并结算，实际'+S.act
 Game.pickAction('给边关将士送冬衣');
 assert(S.actedThisTurn === 2, '衍生指令执行，实际'+S.actedThisTurn);
 
+console.log('▶ 13. 存档搬运（跨设备存档码）');
+Game.startNewGame({ name:'测试六', guohao:'雍', nianhao:'承运', age:28, capital:'神京', bg:'B' });
+S = Game.S;
+for (let i=0;i<6 && !S.dead;i++){           // 玩几个月，攒出后宫/皇嗣/国史/悬案等内容
+  Game.pickAction(1); if (S.busy) drainScene();
+  Game.pickAction(2); if (S.busy) drainScene();
+  Game.pickAction(3); if (S.busy) drainScene();
+  if (S.pendingEvent) Game.resolveEvent('酌情处置');
+  await sleep(20);
+}
+
+const code = await Game.packSave();
+assert(code.indexOf('EMPSAVE1') === 0, '存档码带版本前缀，实际开头：'+code.slice(0,12));
+assert(code.length > 100, '存档码非空（'+code.length+' 字符）');
+if (typeof CompressionStream === 'function')
+  assert(code.length < JSON.stringify(Game.S).length, '压缩生效（码长'+code.length+' < 原长'+JSON.stringify(Game.S).length+'）');
+
+const liveTurn = S.turnCount, liveGold = S.gold, liveName = S.name;
+const liveYear = S.year;
+
+// 解回来内容一致
+const back = await Game.unpackSave(code);
+assert(back.name === liveName, '还原姓名：'+back.name);
+assert(back.turnCount === liveTurn, '还原理政回合：'+back.turnCount+'/'+liveTurn);
+assert(back.year === liveYear, '还原年份：'+back.year+'/'+liveYear);
+assert(back.gold === liveGold, '还原国库：'+back.gold+'/'+liveGold);
+assert(back.harem.length === S.harem.length, '还原后宫人数：'+back.harem.length+'/'+S.harem.length);
+assert(back.history.length === S.history.length, '还原国史卷数：'+back.history.length+'/'+S.history.length);
+assert(back.heirs.length === S.heirs.length, '还原皇嗣人数：'+back.heirs.length+'/'+S.heirs.length);
+assert(back.unresolved.length === S.unresolved.length, '还原未结事件：'+back.unresolved.length);
+
+// 解档不该污染当前进度
+assert(Game.S === S, '解档不替换当前进度（需显式 applySave）');
+
+// 未压缩格式（旧/降级路径）也能导入
+const plainCode = 'EMPSAVE1P' + Game._bytesToB64(new TextEncoder().encode(JSON.stringify(Game.snapshot())));
+const backPlain = await Game.unpackSave(plainCode);
+assert(backPlain.name === liveName && backPlain.gold === liveGold, '未压缩存档码可正常导入');
+assert(plainCode.length > code.length, '压缩版确实更短（'+code.length+' < '+plainCode.length+'）');
+
+// 直接粘贴原始 JSON 也能识别
+const backJson = await Game.unpackSave(JSON.stringify(Game.snapshot()));
+assert(backJson.name === liveName, '原始 JSON 可直接导入');
+
+// 坏码要被拦住，不能把游戏搞死
+let threw = 0;
+for (const bad of ['', 'EMPSAVE1', 'hello world', 'EMPSAVE1Z@@@@', '{"name":"x"}']) {
+  try { await Game.unpackSave(bad); } catch(e){ threw++; }
+}
+assert(threw === 5, '5 种坏存档码全部被拒，实际 '+threw);
+
+// 月末事件处置中导出：要能退回一步，导入后不卡死
+S.actedThisTurn = 3; S.pickedActions = [1,2,3];
+S.pendingEvent = { title:'测试事件', text:'…', hint:'', outcomes:{} };
+const snap = Game.snapshot();
+assert(snap.pendingEvent === null, '导出快照清空待处置事件');
+assert(snap.actedThisTurn === 2, '导出快照退回一步（行动 3→2），实际'+snap.actedThisTurn);
+assert(snap.pickedActions.length === 2, '导出快照同步裁掉已选行动，实际'+snap.pickedActions.length);
+assert(S.pendingEvent !== null && S.actedThisTurn === 3, '导出不污染当前进度');
+
+// 导入后可继续把本回合补满
+const codeMid = await Game.packSave();
+Game.applySave(await Game.unpackSave(codeMid));
+assert(Game.S.actedThisTurn === 2 && !Game.S.pendingEvent, '导入后回到可继续状态');
+Game.pickAction(3); if (Game.S.busy) drainScene();
+assert(Game.S.actedThisTurn === 3, '导入后仍能补满本回合行动，实际'+Game.S.actedThisTurn);
+
+// 导入落盘后能被 localStorage 读回
+Game.applySave(await Game.unpackSave(code));
+assert(Game.hasSave() === true, '导入后已写入本机存档');
+const n2 = Game.S.name;
+Game.S = null;
+assert(Game.load() === true && Game.S.name === n2, '导入的存档可正常读回');
+
 console.log('\n════════════════════');
 console.log(`结果：${pass} 通过，${fail} 失败`);
 if (fail>0) process.exit(1);

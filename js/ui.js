@@ -17,10 +17,21 @@ const UI = {
       };
     }
     // 存档/重开
-    this.$('#btn-save').onclick = () => { Game.save(); this.toast('已存档。'); };
+    this.$('#btn-save').onclick = () => { Game.save(); this.toast('已存到本机（换设备请用「导出」）。'); };
     this.$('#btn-restart').onclick = () => {
       if (confirm('确定要放弃当前进度，重开新局吗？')) { Game.clearSave(); location.reload(); }
     };
+    // 存档搬运
+    this.$('#btn-export').onclick = () => this.openExport();
+    this.$('#btn-import').onclick = () => this.openImport();
+    this.$('#btn-import-welcome').onclick = () => this.openImport();
+    this.$('#modal-close').onclick = () => this.closeModal();
+    this.$('#modal-save').addEventListener('click', e => {
+      if (e.target === this.$('#modal-save')) this.closeModal();
+    });
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape' && !this.$('#modal-save').classList.contains('hidden')) this.closeModal();
+    });
     // 开局输入
     this.$('#setup-send').onclick = () => this.setupAnswer();
     this.$('#setup-input').addEventListener('keydown', e=>{ if(e.key==='Enter') this.setupAnswer(); });
@@ -390,6 +401,136 @@ const UI = {
     t.className = 'toast'; t.textContent = msg;
     this.$('#toast-wrap').appendChild(t);
     setTimeout(()=>{ t.style.opacity='0'; t.style.transition='.4s'; setTimeout(()=>t.remove(), 400); }, 2200);
+  },
+
+  /* ═══════════ 存档搬运（跨设备） ═══════════ */
+
+  openModal(title, bodyHtml, footButtons) {
+    this.$('#modal-title').textContent = title;
+    this.$('#modal-body').innerHTML = bodyHtml;
+    const foot = this.$('#modal-foot');
+    foot.innerHTML = '';
+    (footButtons || []).forEach(b=>{
+      const btn = document.createElement('button');
+      btn.className = 'btn ' + (b.cls || 'btn-ghost');
+      btn.textContent = b.label;
+      btn.onclick = b.onClick;
+      foot.appendChild(btn);
+    });
+    this.$('#modal-save').classList.remove('hidden');
+  },
+  closeModal(){ this.$('#modal-save').classList.add('hidden'); },
+
+  /* ── 导出 ── */
+  async openExport() {
+    if (!Game.S) { this.toast('还没有开局，无从导出。'); return; }
+    this.toast('正在打包存档…');
+    let code;
+    try { code = await Game.packSave(); }
+    catch (e) { this.toast('打包失败，请稍后再试。'); return; }
+
+    const S = Game.S;
+    const kb = (code.length / 1024).toFixed(1);
+    const enc = code.charAt(8) === 'Z' ? '已压缩' : '未压缩';
+    const summary =
+      `${S.guohao} · ${S.name} · ${S.nianhao}${S.year}年${DATA.monthNames[S.month-1]} · ` +
+      `第${S.generation}代 · 已理政${S.turnCount}回合 · 后宫${S.harem.length}人 · 皇嗣${S.heirs.length}人`;
+
+    this.openModal('导出存档 · 带走你的江山', `
+      <div class="modal-step">
+        <b>怎么用：</b>点「复制存档码」，把这一长串发到微信/备忘录/邮件里，或用「下载存档文件」把文件传过去；
+        在新设备上打开游戏，点「导入」粘进去，就能从这一朝接着玩。
+      </div>
+      <div class="save-meta"><span>${summary}</span></div>
+      <div class="save-meta"><span>存档码 ${code.length} 字符（约 ${kb} KB · ${enc}）</span><span>前缀 EMPSAVE1</span></div>
+      <textarea class="save-code" id="code-out" readonly></textarea>
+      <div class="modal-tip">
+        <b>这段码就是你的整个王朝：</b>年份、帝王六维、国库军队民心权臣、后宫诸君与新人、皇嗣培养、藩王、未结事件、历代国史，全在里面。
+        换浏览器、换电脑、清缓存之后，都靠它接上。
+      </div>
+    `, [
+      { label:'复制存档码', cls:'btn-primary', onClick:()=>{
+          const ta = this.$('#code-out');
+          ta.select(); ta.setSelectionRange(0, 999999);
+          const done = ok => this.toast(ok ? '存档码已复制，去粘贴给另一台设备吧。' : '复制失败，请手动全选复制。');
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(ta.value).then(()=>done(true)).catch(()=>done(document.execCommand('copy')));
+          } else done(document.execCommand('copy'));
+        } },
+      { label:'下载存档文件', onClick:()=>this.downloadSave(code) },
+      { label:'关闭', onClick:()=>this.closeModal() },
+    ]);
+    this.$('#code-out').value = code;
+  },
+
+  downloadSave(code) {
+    try {
+      const blob = new Blob([code], { type:'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = Game.saveFileName();
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(()=>URL.revokeObjectURL(url), 4000);
+      this.toast('存档文件已下载，传到新设备后用「导入」选它。');
+    } catch (e) { this.toast('下载失败，请改用「复制存档码」。'); }
+  },
+
+  /* ── 导入 ── */
+  openImport() {
+    const inGame = !!Game.S;
+    this.openModal('导入存档 · 接着上一朝玩', `
+      <div class="modal-step">
+        <b>从另一台设备搬过来：</b>把存档码粘贴到下面的框里，或点「选择文件」挑之前下载的存档文件。
+      </div>
+      <div class="save-file-row">
+        <input type="file" id="save-file" accept=".txt,.json,text/plain,application/json">
+        <span style="font-size:12px;color:#9c8f7a">选好文件会自动读进来</span>
+      </div>
+      <textarea class="save-code" id="code-in" placeholder="在此粘贴存档码（EMPSAVE1 开头的一长串），也可以直接粘贴存档 JSON…"></textarea>
+      ${inGame ? '<div class="modal-warn">⚠ 导入会用搬来的存档覆盖这台设备上的当前进度。若这一朝还没导出过，请先「导出」备份。</div>' : ''}
+      <div class="modal-tip">存档码很长是正常的——里面装着整个王朝。粘贴时注意别漏掉头尾。</div>
+    `, [
+      { label:'确认导入', cls:'btn-primary', onClick:()=>this.doImport(this.$('#code-in').value) },
+      { label:'取消', onClick:()=>this.closeModal() },
+    ]);
+
+    this.$('#save-file').onchange = e => {
+      const f = e.target.files && e.target.files[0];
+      if (!f) return;
+      const r = new FileReader();
+      r.onload = () => {
+        this.$('#code-in').value = String(r.result || '').trim();
+        this.toast('文件已读入，点「确认导入」继续。');
+      };
+      r.onerror = () => this.toast('文件读取失败，请改用粘贴存档码。');
+      r.readAsText(f, 'utf-8');
+    };
+  },
+
+  async doImport(raw) {
+    const code = String(raw || '').trim();
+    if (!code) { this.toast('还没有粘贴存档码。'); return; }
+    this.toast('正在解档…');
+    let state;
+    try { state = await Game.unpackSave(code); }
+    catch (e) { this.toast((e && e.message) || '存档码无法解析，请检查是否复制完整。'); return; }
+
+    Game.applySave(state);
+    this.closeModal();
+    const S = Game.S;
+    this.showScreen('game');
+    this.setDockMode(S.pendingEvent ? 'event' : 'actions');
+    this.$('#story-flow').innerHTML = '';
+    this.renderAll();
+    this.pushDivider(`卷土重来 · ${S.nianhao}${S.year}年${DATA.monthNames[S.month-1]}`);
+    this.pushCard('narr',
+      `<b>前朝旧档已从别处搬回。</b><br>` +
+      `${S.guohao} · ${S.name}，第${S.generation}代，年${S.age}岁，在位第${S.year}年。` +
+      `国库${S.gold}万两、军队${S.army}万、民心${S.people}；后宫${S.harem.length}人，皇嗣${S.heirs.length}人。` +
+      `已理政 ${S.turnCount} 回合，全部进度完好。`, '');
+    this.pushCard('sys', '请选择本回合 3 项行动。');
+    this.toast('导入成功，接着玩吧。');
+    setTimeout(()=>this.scrollStory(), 80);
   },
 
   /* ─────── 结局画面 ─────── */
