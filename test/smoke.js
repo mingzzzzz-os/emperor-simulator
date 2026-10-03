@@ -8,9 +8,9 @@ global.UI = {
   renderAll(){}, toast(m){ cards.push('[toast] '+m); },
   pushCard(t,h){ cards.push('['+t+'] '+String(h).slice(0,60)); },
   pushDivider(t){ cards.push('=== '+t+' ==='); },
-  pushActionCard(n,t){ cards.push('[action:'+n+'] '+String(t).slice(0,50)); },
-  pushEventCard(t,x){ cards.push('[event:'+t+'] '+String(x).slice(0,50)); },
-  pushNpcCard(t){ cards.push('[npc] '+String(t).slice(0,50)); },
+  pushActionCard(n,t){ cards.push('[action:'+n+'] '+String(t).slice(0,200)); },
+  pushEventCard(t,x){ cards.push('[event:'+t+'] '+String(x).slice(0,200)); },
+  pushNpcCard(t){ cards.push('[npc] '+String(t).slice(0,200)); },
   setDockMode(m){ cards.push('[dock:'+m+']'); },
   buildEventQuick(){},
   showChoices(cs,onPick,onFree){ global._pick=onPick; global._free=onFree; },
@@ -96,6 +96,92 @@ if (S.npcQueue && S.npcQueue.length) {
   assert(true, '本月无NPC请示（正常随机）');
 }
 assert(S.busy === false, '请示完毕后解除忙碌');
+
+console.log('▶ 5.5 自由批复语义解析（批复与结果强相关）');
+Game.startNewGame({ name:'语义', guohao:'雍', nianhao:'测元', age:25, capital:'神京', bg:'A' });
+S = Game.S;
+// 严厉批复 → 威严↑ 仁德↓，且叙述与措辞相关
+Game.pickAction(1);
+let w0=S.weiyan, r0=S.rende;
+Game.resolveSceneFree('将妄议之人拖下去杖责八十，从重治罪，以儆效尤');
+assert(S.weiyan > w0, '严厉批复→威严上升 '+w0+'→'+S.weiyan);
+assert(S.rende < r0, '严厉批复→仁德下降 '+r0+'→'+S.rende);
+const punishCard = cards.filter(c=>c.startsWith('[action:上朝 · 结果]')).pop();
+assert(/行罚|斩钉截铁/.test(punishCard), '严厉批复的结果叙述应相关，实际：'+punishCard);
+// 宽容批复 → 仁德↑ 威严不升，叙述与严厉版不同
+w0=S.weiyan; r0=S.rende;
+Game.pickAction(1);
+Game.resolveSceneFree('都不必追究了，宽赦他们，既往不咎');
+assert(S.rende > r0, '宽容批复→仁德上升 '+r0+'→'+S.rende);
+assert(!(S.weiyan > w0), '宽容批复→威严不升 '+w0+'→'+S.weiyan);
+const lenientCard = cards.filter(c=>c.startsWith('[action:上朝 · 结果]')).pop();
+assert(/金口|宽赦/.test(lenientCard), '宽容批复的结果叙述应相关，实际：'+lenientCard);
+assert(lenientCard !== punishCard, '两种批复的结果文本必须不同');
+// 查究批复 → 手腕↑
+let s0=S.shouwan;
+Game.pickAction(1);
+Game.resolveSceneFree('暗中派人查一查此事的来龙去脉，务求水落石出');
+assert(S.shouwan > s0, '查究批复→手腕上升 '+s0+'→'+S.shouwan);
+await sleep(50);
+
+// 事件：主倾向从严 + 附加查究意图，文本与数值双关联
+if (!S.pendingEvent) Game.triggerRandomEvent();
+S.pendingEvent = JSON.parse(JSON.stringify(DATA.events[0]));
+s0 = S.shouwan;
+Game.resolveEvent('首恶斩立决，同时暗中查访幕后主使');
+assert(S.pendingEvent === null, '事件已处置');
+assert(S.shouwan > s0, '附加查究→手腕额外上升 '+s0+'→'+S.shouwan);
+const evRes = cards.filter(c=>c.startsWith('[event:处置结果]')).pop();
+assert(/暗|查|根脚/.test(evRes), '处置结果应包含查究安排，实际：'+evRes);
+await sleep(80);
+await drainPetitions();
+
+console.log('▶ 5.6 NPC请示自由批复（数值指向对应人物）');
+S = Game.S; S.dead=false; S.busy=false; S.pendingEvent=null; S.actedThisTurn=0; S.pickedActions=[]; S.jingshen=60;
+const xiao2 = S.courtiers.find(c=>c.id==='xiaopojun');
+S.npcQueue = [DATA.npcPetitions.find(p=>p.id==='xiao_gift')];
+let l0 = xiao2.loyal;
+Game.nextPetition();
+assert(!!S.currentPetition, '请示已呈递');
+Game.resolvePetitionFree('马是好马，朕却不能收——传话回去，边军将士比朕更需要它');
+assert(xiao2.loyal < l0, '拒绝献马→萧破军忠心下降 '+l0+'→'+xiao2.loyal);
+await sleep(30);
+S.npcQueue = [DATA.npcPetitions.find(p=>p.id==='xiao_gift')];
+l0 = xiao2.loyal;
+Game.nextPetition();
+Game.resolvePetitionFree('既然将军一片忠心，就照准了，另赐御剑一柄');
+assert(xiao2.loyal > l0, '照准并赏→萧破军忠心上升 '+l0+'→'+xiao2.loyal);
+await sleep(30);
+S.npcQueue=[]; S.busy=false; S.currentPetition=null;
+
+console.log('▶ 5.7 后宫亲昵批复（宠爱联动）');
+S = Game.S; S.busy=false; S.pendingEvent=null; S.actedThisTurn=0; S.pickedActions=[]; S.jingshen=60;
+Game.pickAction(4);
+assert(!!S.pendingPicker, '先选去处');
+const hOpts = S.pendingPicker.options;
+const hqIdx = hOpts.findIndex(o=>o.label.includes('皇后'));
+Game.pickSceneTarget(hqIdx >= 0 ? hqIdx : 0);
+assert(!!S.currentScene, '进入独处场景');
+if (hqIdx >= 0) {
+  const hq = S.harem.find(h=>h.id==='shenqingxian');
+  const f0 = hq.favor;
+  Game.resolveSceneFree('拉着她的手到灯下坐坐，今夜就陪你说说话');
+  assert(hq.favor > f0, '亲昵批复→皇后宠爱上升 '+f0+'→'+hq.favor);
+} else {
+  Game.resolveSceneFree('陪你说说话');
+  assert(S.actedThisTurn === 1, '完成决断');
+}
+
+console.log('▶ 5.8 教导皇嗣自由发挥（皇嗣五维联动）');
+S = Game.S; S.busy=false; S.pendingEvent=null; S.actedThisTurn=0; S.pickedActions=[]; S.jingshen=60;
+const heir0 = S.heirs[0];
+const hz = heir0.zhi;
+Game.pickAction(11);
+assert(!!S.pendingPicker, '先选皇嗣');
+Game.pickSceneTarget(0);
+assert(!!S.currentScene, '进入教导场景');
+Game.resolveSceneFree('和她聊聊为君之道，听听她的想法');
+assert(heir0.zhi > hz, '谈为君之道→皇嗣智上升 '+hz+'→'+heir0.zhi);
 
 console.log('▶ 6. 长程模拟 150 回合稳定性');
 let err = null;

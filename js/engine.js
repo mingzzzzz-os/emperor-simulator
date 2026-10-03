@@ -222,6 +222,17 @@ const Game = {
       const s = words.filter(w=>text.includes(w)).length;
       if (s > bs) { bs = s; best = i; }
     });
+    if (best < 0) {
+      // 按人物称呼匹配（如「去皇后宫里坐坐」「找裴镜」）
+      const npcId = this.sceneNpcId(text);
+      if (npcId) {
+        const n = this.npc(npcId);
+        if (n) {
+          const idx = pk.options.findIndex(o=>o.label.includes(n.name));
+          if (idx >= 0) best = idx;
+        }
+      }
+    }
     if (best >= 0) { this.pickSceneTarget(best); return; }
     S.pendingPicker = null; S.busy = false;
     UI.pushCard('narr', `<b>你的意思：</b>${text}`, '');
@@ -258,9 +269,17 @@ const Game = {
       const s = (c.keys||[]).filter(w=>text.includes(w)).length;
       if (s > bs) { bs = s; best = c; }
     }
-    if (best) this.finishScene(best.result, `「${text}」`);
-    else if (cs.scene.free) this.finishScene(cs.scene.free, `「${text}」`);
-    else this.finishScene(choices[0].result, `「${text}」`);
+    // 强匹配（≥2个关键词，或极短的明确指令）才视为选择该项；
+    // 否则走语义解析，按你的措辞生成专属结果
+    if (best && (bs >= 2 || (bs >= 1 && text.length <= 6))) {
+      this.finishScene(best.result, `「${text}」`);
+      return;
+    }
+    const sceneText = typeof cs.scene.text==='function' ? cs.scene.text(S) : cs.scene.text;
+    const npcId = this.sceneNpcId(sceneText);
+    const kind = cs.actionId===11 ? 'heir' : 'scene';
+    const dyn = this.interpretFree(text, { npcId, kind });
+    this.finishScene(dyn, `「${text}」`);
   },
 
   finishScene(result, labelText) {
@@ -278,6 +297,101 @@ const Game = {
     if (this.checkDeath()) return;
     if (S.actedThisTurn >= 3) setTimeout(()=>this.triggerRandomEvent(), 350);
     else UI.toast(`本回合还可选择 ${3 - S.actedThisTurn} 项行动`);
+  },
+
+  /* ─────── 自由批复语义解析 ─────── */
+  /* 把玩家的话拆成意图（按强度排序） */
+  analyzeIntent(text) {
+    const res = [];
+    for (const [name, words] of Object.entries(DATA.freeIntents.words)) {
+      let score = 0;
+      for (const w of words) if (text.includes(w)) score += w.length >= 2 ? 2 : 1;
+      if (score > 0) res.push({ name, score });
+    }
+    // “不准”含“准”：拒绝与应允同时命中时，拒绝优先
+    const r = res.find(x=>x.name==='refuse'), g = res.find(x=>x.name==='grant');
+    if (r && g) r.score += 2;
+    res.sort((a,b)=>b.score-a.score);
+    return res;
+  },
+
+  /* 语气强度：从重/加倍→1.5x，酌情/减半→0.6x */
+  intensityOf(text) {
+    let m = 1;
+    for (const w of DATA.freeIntents.boost) if (text.includes(w)) { m = 1.5; break; }
+    for (const w of DATA.freeIntents.reduce) if (text.includes(w)) { m = Math.min(m, 0.6); break; }
+    return m;
+  },
+
+  npcAttitudeField(npcId) {
+    return ['shenqingxian','xielanyin','jiangxuelou','peijing'].includes(npcId) ? 'favor' : 'loyal';
+  },
+
+  /* 从剧情文本里找涉及的人物（取最先出现者） */
+  sceneNpcId(text) {
+    let found = null, pos = Infinity;
+    for (const [title, id] of DATA.freeIntents.npcTitles) {
+      const i = String(text).indexOf(title);
+      if (i >= 0 && i < pos) { pos = i; found = id; }
+    }
+    return found;
+  },
+
+  /* 核心：把自由批复解读为「专属结果 + 关联数值」 */
+  interpretFree(text, ctx) {
+    ctx = ctx || {};
+    const intents = this.analyzeIntent(text);
+    const mult = this.intensityOf(text);
+    const top = intents[0] || null;
+    const parts = [];
+    const deltas = [];
+
+    // 教导皇嗣：意图映射到皇嗣五维
+    if (ctx.kind === 'heir') {
+      const hm = DATA.freeIntents.heirMap;
+      if (top && hm[top.name]) {
+        parts.push(this.rand(hm[top.name].lines));
+        for (const d of hm[top.name].deltas) deltas.push({...d, v: Math.round(d.v*mult)||d.v});
+      } else {
+        parts.push(this.rand(DATA.freeIntents.heirFallback));
+        deltas.push({k:'_heir:zhi', v:+2, r:'耳提面命'}, {k:'_heir:xinxing', v:+1, r:'耳濡目染'});
+      }
+      return { text: parts.join(''), deltas };
+    }
+
+    if (top) {
+      const spec = DATA.freeIntents.deltas[top.name];
+      const field = ctx.npcId ? this.npcAttitudeField(ctx.npcId) : null;
+      if (spec) {
+        for (const d of spec({ npcId: ctx.npcId || null, field })) {
+          const v = Math.round(d.v * mult);
+          if (v !== 0) deltas.push({ k:d.k, v, r:d.r });
+        }
+      }
+      const pool = DATA.freeIntents.lines[top.name];
+      if (pool) parts.push(this.rand(pool));
+      // 涉及人物时，按其性格给出反应（受益/受损/中性）
+      if (ctx.npcId) {
+        const pol = DATA.freeIntents.polarity[top.name] || 'neutral';
+        const reacts = ((DATA.freeIntents.reacts||{})[ctx.npcId]||{})[pol];
+        if (reacts) parts.push(this.rand(reacts));
+      }
+    } else {
+      parts.push(this.rand(DATA.freeIntents.lines.fallback));
+      deltas.push({k:'shouwan', v:+1, r:'临机专断，自有主张'});
+    }
+
+    // 次级明确意图（如“处置之余，再加查访”），按半量结算
+    const second = intents.slice(1).find(x=>x.score>=2 && DATA.freeIntents.addons[x.name]);
+    if (second) {
+      const add = DATA.freeIntents.addons[second.name];
+      parts.push(add.text);
+      for (const d of add.deltas) {
+        const v = Math.round(d.v * 0.5 * mult);
+        if (v !== 0) deltas.push({ k:d.k, v, r:d.r });
+      }
+    }
+    return { text: parts.join(''), deltas };
   },
 
   /* 自由衍生行动 */
@@ -342,10 +456,26 @@ const Game = {
       if (score > best) { best = score; tendency = t; }
     }
     const oc = ev.outcomes[tendency] || ev.outcomes.ignore;
+    const mult = this.intensityOf(input);
 
     UI.pushCard('narr', `<b>你的处置：</b>${input}`, '');
-    const chips = this.applyDeltas(oc.deltas);
-    UI.pushEventCard('处置结果', oc.text, null, chips);
+    // 主结果数值：按语气强度缩放（“从重/加倍”1.5x，“酌情/减半”0.6x）
+    const mainDeltas = oc.deltas.map(d => mult===1 ? d : {...d, v:(Math.round(d.v*mult)||d.v)});
+    let chips = this.applyDeltas(mainDeltas);
+
+    // 附加意图：你的措辞里超出主倾向的明确安排（如从严之外又命查访）
+    const covered = { tough:['punish','force'], soft:['lenient','grant','comfort'], investigate:['investigate'], ignore:['delay'] }[tendency];
+    const extras = this.analyzeIntent(input)
+      .filter(x=>!covered.includes(x.name) && DATA.freeIntents.addons[x.name])
+      .slice(0,2);
+    let extraText = '';
+    for (const ex of extras) {
+      const add = DATA.freeIntents.addons[ex.name];
+      extraText += '<br>' + add.text;
+      chips = chips.concat(this.applyDeltas(add.deltas.map(d=>({...d, v:(Math.round(d.v*0.5*mult)||d.v)}))));
+    }
+
+    UI.pushEventCard('处置结果', oc.text + extraText, null, chips);
 
     // 未了结判定：soft/ignore 处置有概率留尾巴
     const unresolved = (tendency==='soft' && this.chance(0.3)) || tendency==='ignore';
@@ -467,30 +597,43 @@ const Game = {
     S.currentPetition = p;
     UI.pushNpcCard(p.text, null);
 
-    const answer = (result, label) => {
-      S.npcQueue.shift(); S.busy = false; S.currentPetition = null;
-      UI.pushCard('narr', `<b>你的批复：</b>${label}`, '');
-      const chips = this.applyDeltas(result.deltas || []);
-      UI.pushNpcCard(result.text, chips);
-      this.save();
-      if (this.checkDeath()) return;
-      setTimeout(()=>this.nextPetition(), 300);
-    };
-
     UI.showChoices(p.choices.map(c=>({label:c.label})),
-      i => answer(p.choices[i].result, p.choices[i].label),
-      t => {
-        let best = null, bs = 0;
-        for (const c of p.choices) {
-          const s = (c.keys||[]).filter(w=>t.includes(w)).length;
-          if (s > bs) { bs = s; best = c; }
-        }
-        if (best) answer(best.result, `「${t}」`);
-        else if (p.free) answer(p.free, `「${t}」`);
-        else answer(p.choices[0].result, `「${t}」`);
-      });
+      i => this.resolvePetitionChoice(i),
+      t => this.resolvePetitionFree(t));
     UI.setDockMode('choices');
     UI.renderAll();
+  },
+
+  answerPetition(result, label) {
+    const S = this.S;
+    S.npcQueue.shift(); S.busy = false; S.currentPetition = null;
+    UI.pushCard('narr', `<b>你的批复：</b>${label}`, '');
+    const chips = this.applyDeltas(result.deltas || []);
+    UI.pushNpcCard(result.text, chips);
+    this.save();
+    if (this.checkDeath()) return;
+    setTimeout(()=>this.nextPetition(), 300);
+  },
+
+  resolvePetitionChoice(i) {
+    const p = this.S.currentPetition; if (!p) return;
+    this.answerPetition(p.choices[i].result, p.choices[i].label);
+  },
+
+  resolvePetitionFree(text) {
+    const p = this.S.currentPetition; if (!p) return;
+    let best = null, bs = 0;
+    for (const c of p.choices) {
+      const s = (c.keys||[]).filter(w=>text.includes(w)).length;
+      if (s > bs) { bs = s; best = c; }
+    }
+    if (best && (bs >= 2 || (bs >= 1 && text.length <= 6))) {
+      this.answerPetition(best.result, `「${text}」`);
+      return;
+    }
+    const npcId = (DATA.freeIntents.petitionNpc||{})[p.id] || this.sceneNpcId(p.text);
+    const dyn = this.interpretFree(text, { npcId, kind:'petition' });
+    this.answerPetition(dyn, `「${text}」`);
   },
 
   addAdoptedHeir() {
