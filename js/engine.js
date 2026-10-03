@@ -21,6 +21,7 @@ const Game = {
       // 流程
       pickedActions:[], actedThisTurn:0,
       pendingEvent:null, unresolved:[], history:[],
+      busy:false, pendingPicker:null, currentScene:null, currentPetition:null, npcQueue:[],
       flags:{}, dead:false, turnCount:0,
       statusName:'庸主', statusDesc:'',
       achieved:{},  // 功过统计
@@ -54,9 +55,12 @@ const Game = {
         t[field] = this.clamp((t[field]||0) + v);
         npcName = t.name;
         label = this.attrLabel(field);
-      } else if (k.startsWith('heir:')) {
-        const [, id, field] = k.split(':');
-        const t = this.heir(id); if (!t) continue;
+      } else if (k.startsWith('heir:') || k.startsWith('_heir:')) {
+        const parts = k.split(':');
+        let id, field;
+        if (k.startsWith('_heir:')) { id = (S.currentScene||{}).heirId; field = parts[1]; }
+        else { id = parts[1]; field = parts[2]; }
+        const t = this.heir(id) || S.heirs[0]; if (!t) continue;
         t[field] = this.clamp((t[field]||0) + v);
         heirName = t.name;
         label = this.attrLabel(field);
@@ -106,6 +110,7 @@ const Game = {
   pickAction(idOrText) {
     const S = this.S;
     if (S.dead || S.pendingEvent) return;
+    if (S.busy) { UI.toast('请先完成当前的决断。'); return; }
     let id = null;
 
     if (/^\d{1,2}$/.test(String(idOrText).trim())) {
@@ -133,10 +138,17 @@ const Game = {
       return;
     }
 
+    // 场景化行动：演到该拍板处停下，等玩家决定
+    const def = DATA.scenes && DATA.scenes[id];
+    if (def && (def.always || !DATA.actionStories[id] || this.chance(0.3))) {
+      this.startScene(id, def);
+      return;
+    }
+
+    // 即时行动（巡营/批阅奏折/修养/祭祀）
     const story = this.rand(DATA.actionStories[id]);
     const chips = this.applyDeltas([{k:'jingshen', v:act.energy, r: act.energy<0?'行动耗神':'静养回神'}, ...story.deltas]);
 
-    // 特殊处理：批阅奏折可调阅国史 / 修养得丹药后可能服丹
     let extra = '';
     if (id === 5 && S.history.length > 0 && this.chance(0.35)) {
       const h = this.rand(S.history);
@@ -153,7 +165,6 @@ const Game = {
     S.actedThisTurn++;
     UI.renderAll();
 
-    // 死亡即时判定（精力衰竭/丹毒）
     if (this.checkDeath()) return;
 
     if (S.actedThisTurn >= 3) {
@@ -161,6 +172,112 @@ const Game = {
     } else {
       UI.toast(`本回合还可选择 ${3 - S.actedThisTurn} 项行动`);
     }
+  },
+
+  /* ─────── 场景化决策 ─────── */
+  startScene(id, def) {
+    const S = this.S;
+    if (def.picker) {
+      const p = def.picker(S);
+      if (!p.options.length) { UI.pushCard('sys', '眼下无人可往、无事可办。'); return; }
+      S.busy = true;
+      S.pendingPicker = { actionId:id, options:p.options };
+      UI.pushActionCard(DATA.actions.find(a=>a.id===id).name, p.text, null);
+      UI.showChoices(p.options.map(o=>({label:o.label})),
+        i=>this.pickSceneTarget(i),
+        t=>this.pickSceneTargetFree(t));
+      UI.setDockMode('choices');
+      UI.renderAll();
+    } else {
+      const pool = def.list.filter(s=>!s.cond || s.cond(S));
+      if (!pool.length) { UI.pushCard('sys', '今日无甚要紧事。'); return; }
+      this.presentScene(id, this.rand(pool), null);
+    }
+  },
+
+  pickSceneTarget(i) {
+    const S = this.S, pk = S.pendingPicker; if (!pk) return;
+    S.pendingPicker = null;
+    const opt = pk.options[i];
+    const def = DATA.scenes[pk.actionId];
+    if (def.poolByHeir) {
+      this.presentScene(pk.actionId, this.rand(def.pool._heir), opt.key);
+      return;
+    }
+    const plist = def.pool[opt.key];
+    if (!plist || !plist.length) {
+      S.busy = false;
+      UI.pushCard('sys', '今夜不巧，那边宫门已闭，你折返了回去。');
+      UI.setDockMode('actions'); UI.renderAll();
+      return;
+    }
+    this.presentScene(pk.actionId, this.rand(plist), null);
+  },
+
+  pickSceneTargetFree(text) {
+    const S = this.S, pk = S.pendingPicker; if (!pk) return;
+    let best = -1, bs = 0;
+    pk.options.forEach((o, i)=>{
+      const words = o.label.replace(/[·（）()]/g,' ').split(/\s+/).filter(w=>w.length>=2);
+      const s = words.filter(w=>text.includes(w)).length;
+      if (s > bs) { bs = s; best = i; }
+    });
+    if (best >= 0) { this.pickSceneTarget(best); return; }
+    S.pendingPicker = null; S.busy = false;
+    UI.pushCard('narr', `<b>你的意思：</b>${text}`, '');
+    UI.pushCard('sys', '你没拿定主意，在廊下站了一会儿，回宫了。');
+    UI.setDockMode('actions'); UI.renderAll();
+  },
+
+  presentScene(actionId, scene, heirId) {
+    const S = this.S;
+    S.busy = true;
+    S.currentScene = { actionId, scene, heirId };
+    const text = typeof scene.text === 'function' ? scene.text(S) : scene.text;
+    UI.pushActionCard(DATA.actions.find(a=>a.id===actionId).name, text, null);
+    const choices = typeof scene.choices === 'function' ? scene.choices(S) : scene.choices;
+    UI.showChoices(choices.map(c=>({label:c.label, desc:c.desc})),
+      i=>this.resolveSceneChoice(i),
+      t=>this.resolveSceneFree(t));
+    UI.setDockMode('choices');
+    UI.renderAll();
+  },
+
+  resolveSceneChoice(i) {
+    const S = this.S, cs = S.currentScene; if (!cs) return;
+    const choices = typeof cs.scene.choices==='function' ? cs.scene.choices(S) : cs.scene.choices;
+    const c = choices[i];
+    this.finishScene(c.result, c.label);
+  },
+
+  resolveSceneFree(text) {
+    const S = this.S, cs = S.currentScene; if (!cs) return;
+    const choices = typeof cs.scene.choices==='function' ? cs.scene.choices(S) : cs.scene.choices;
+    let best = null, bs = 0;
+    for (const c of choices) {
+      const s = (c.keys||[]).filter(w=>text.includes(w)).length;
+      if (s > bs) { bs = s; best = c; }
+    }
+    if (best) this.finishScene(best.result, `「${text}」`);
+    else if (cs.scene.free) this.finishScene(cs.scene.free, `「${text}」`);
+    else this.finishScene(choices[0].result, `「${text}」`);
+  },
+
+  finishScene(result, labelText) {
+    const S = this.S, cs = S.currentScene; if (!cs) return;
+    const act = DATA.actions.find(a=>a.id===cs.actionId);
+    if (labelText) UI.pushCard('narr', `<b>你的决定：</b>${labelText}`, '');
+    const rtext = typeof result.text==='function' ? result.text(S) : result.text;
+    const chips = this.applyDeltas([{k:'jingshen', v:act.energy, r:act.energy<0?'行动耗神':'静养回神'}, ...(result.deltas||[])]);
+    UI.pushActionCard(`${act.name} · 结果`, rtext, chips);
+    S.currentScene = null; S.busy = false;
+    S.pickedActions.push(cs.actionId);
+    S.actedThisTurn++;
+    UI.setDockMode('actions');
+    UI.renderAll();
+    if (this.checkDeath()) return;
+    if (S.actedThisTurn >= 3) setTimeout(()=>this.triggerRandomEvent(), 350);
+    else UI.toast(`本回合还可选择 ${3 - S.actedThisTurn} 项行动`);
   },
 
   /* 自由衍生行动 */
@@ -206,6 +323,7 @@ const Game = {
     ev.stamp = `${S.year}年${DATA.monthNames[S.month-1]}`;
     S.pendingEvent = ev;
     UI.pushEventCard(ev.title, ev.text, ev.hint);
+    UI.buildEventQuick();
     UI.setDockMode('event');
     UI.renderAll();
   },
@@ -295,8 +413,18 @@ const Game = {
       }
     }
 
-    // 5) NPC 主动行为
-    this.runNpcActions();
+    // 5) NPC 纯信息动向（无需决策）
+    const news = DATA.npcNews.filter(a=>a.cond(S));
+    if (news.length && this.chance(0.7)) {
+      const a = this.rand(news);
+      const chips = this.applyDeltas(a.deltas);
+      UI.pushNpcCard(a.text, chips);
+    }
+    // 后宫争宠小动作
+    if (this.chance(0.3) && S.harem.length>1) {
+      const a = this.rand(S.harem), b = this.rand(S.harem.filter(x=>x!==a));
+      a.favor = this.clamp(a.favor + 2); b.favor = this.clamp(b.favor - 2);
+    }
 
     // 6) 精力自然恢复少许 + 耗竭判定
     S.jingshen = this.clamp(S.jingshen + 4);
@@ -315,8 +443,54 @@ const Game = {
 
     UI.renderAll();
     this.save();
-    this.checkDeath();
-    if (!S.dead) UI.pushCard('sys', '新的一月开始。请选择本回合 3 项行动。');
+    if (this.checkDeath()) return;
+
+    // 6) NPC 请示队列（必须玩家批复，不得代为决断）
+    const petitions = DATA.npcPetitions.filter(p=>p.cond(S));
+    petitions.sort(()=>Math.random()-0.5);
+    S.npcQueue = petitions.slice(0, this.chance(0.5) ? 1 : 2);
+    setTimeout(()=>this.nextPetition(), 400);
+  },
+
+  /* NPC 请示：逐个呈递，玩家亲自批复 */
+  nextPetition() {
+    const S = this.S;
+    if (!S.npcQueue || !S.npcQueue.length) {
+      S.currentPetition = null; S.busy = false;
+      UI.pushCard('sys', '新的一月开始。请选择本回合 3 项行动。');
+      UI.setDockMode('actions');
+      UI.renderAll();
+      return;
+    }
+    const p = S.npcQueue[0];
+    S.busy = true;
+    S.currentPetition = p;
+    UI.pushNpcCard(p.text, null);
+
+    const answer = (result, label) => {
+      S.npcQueue.shift(); S.busy = false; S.currentPetition = null;
+      UI.pushCard('narr', `<b>你的批复：</b>${label}`, '');
+      const chips = this.applyDeltas(result.deltas || []);
+      UI.pushNpcCard(result.text, chips);
+      this.save();
+      if (this.checkDeath()) return;
+      setTimeout(()=>this.nextPetition(), 300);
+    };
+
+    UI.showChoices(p.choices.map(c=>({label:c.label})),
+      i => answer(p.choices[i].result, p.choices[i].label),
+      t => {
+        let best = null, bs = 0;
+        for (const c of p.choices) {
+          const s = (c.keys||[]).filter(w=>t.includes(w)).length;
+          if (s > bs) { bs = s; best = c; }
+        }
+        if (best) answer(best.result, `「${t}」`);
+        else if (p.free) answer(p.free, `「${t}」`);
+        else answer(p.choices[0].result, `「${t}」`);
+      });
+    UI.setDockMode('choices');
+    UI.renderAll();
   },
 
   addAdoptedHeir() {
@@ -334,27 +508,6 @@ const Game = {
     };
     S.heirs.push(h);
     UI.pushCard('npc', `👶 宗室来报：${surname}氏旁支新添一女，依祖制过继帝脉，赐名${name}，录入玉牒。你多了${S.heirs.length-1===0?'一位':'又一位'}皇嗣。`, '');
-  },
-
-  runNpcActions() {
-    const S = this.S;
-    const pool = DATA.npcActions.filter(a=>{
-      if (a.cond==='xiao_alive') return !!this.npc('xiaopojun');
-      if (a.cond==='harem_multi') return S.harem.filter(h=>!h.cold).length >= 2;
-      return true;
-    });
-    // 加权随机 1-2 条
-    const n = this.chance(0.6) ? 1 : 2;
-    for (let i=0;i<n;i++){
-      const a = this.rand(pool);
-      const chips = this.applyDeltas(a.deltas);
-      UI.pushNpcCard(a.text, chips);
-    }
-    // 后宫争宠小动作
-    if (this.chance(0.3) && S.harem.length>1) {
-      const a = this.rand(S.harem), b = this.rand(S.harem.filter(x=>x!==a));
-      a.favor = this.clamp(a.favor + 2); b.favor = this.clamp(b.favor - 2);
-    }
   },
 
   /* ─────── 册封（立储/封藩，经「教导皇嗣」后的扩展指令） ─────── */
@@ -530,7 +683,16 @@ const Game = {
 
   /* ─────── 存档 ─────── */
   save(){ try{ localStorage.setItem(SAVE_KEY, JSON.stringify(this.S)); }catch(e){} },
-  load(){ try{ const s = localStorage.getItem(SAVE_KEY); if(!s) return false; this.S = JSON.parse(s); return true; }catch(e){ return false; } },
+  load(){
+    try{
+      const s = localStorage.getItem(SAVE_KEY); if(!s) return false;
+      this.S = JSON.parse(s);
+      // 读档时重置一切进行中的决策状态，避免流程卡死
+      this.S.busy = false; this.S.pendingPicker = null;
+      this.S.currentScene = null; this.S.currentPetition = null; this.S.npcQueue = [];
+      return true;
+    }catch(e){ return false; }
+  },
   clearSave(){ localStorage.removeItem(SAVE_KEY); },
   hasSave(){ return !!localStorage.getItem(SAVE_KEY); },
 };

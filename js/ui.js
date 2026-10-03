@@ -43,6 +43,16 @@ const UI = {
     this.$('#event-input').addEventListener('keydown', e=>{
       if(e.key==='Enter'){ this.$('#event-send').click(); }
     });
+    // 决策场景：自由决断输入
+    this.$('#choice-send').onclick = () => {
+      const v = this.$('#choice-input').value.trim();
+      if (!v) return;
+      this.$('#choice-input').value = '';
+      if (this._choiceFree) this._choiceFree(v);
+    };
+    this.$('#choice-input').addEventListener('keydown', e=>{
+      if(e.key==='Enter'){ this.$('#choice-send').click(); }
+    });
     // 人物 tabs
     this.$$('#people-tabs .ptab').forEach(b=>{
       b.onclick = ()=>{ this.peopleTab = b.dataset.tab;
@@ -278,14 +288,15 @@ const UI = {
   renderDock() {
     const S = Game.S;
     this.$('#dock-picked').textContent = S.actedThisTurn;
+    const lock = S.actedThisTurn >= 3 || !!S.pendingEvent || S.dead || !!S.busy;
     const btns = this.$$('#action-grid .act-btn');
     btns.forEach(b=>{
       const id = parseInt(b.dataset.id);
       b.classList.toggle('picked', S.pickedActions.includes(id));
-      b.disabled = S.actedThisTurn >= 3 || !!S.pendingEvent || S.dead;
+      b.disabled = lock;
     });
-    this.$('#free-input').disabled = S.actedThisTurn >= 3 || !!S.pendingEvent || S.dead;
-    this.$('#free-send').disabled = S.actedThisTurn >= 3 || !!S.pendingEvent || S.dead;
+    this.$('#free-input').disabled = lock;
+    this.$('#free-send').disabled = lock;
   },
 
   setDockMode(mode) {
@@ -293,6 +304,41 @@ const UI = {
     this.$('#dock-event').classList.toggle('hidden', mode!=='event');
     this.$('#dock-choices').classList.toggle('hidden', mode!=='choices');
     if (mode==='event') setTimeout(()=>this.$('#event-input').focus(), 100);
+    if (mode==='choices') setTimeout(()=>this.$('#choice-input').focus(), 100);
+  },
+
+  /* 决策场景选项面板 */
+  showChoices(choices, onPick, onFree) {
+    this._choicePick = onPick;
+    this._choiceFree = onFree;
+    const list = this.$('#choice-list');
+    list.innerHTML = '';
+    choices.forEach((c, i)=>{
+      const b = document.createElement('button');
+      b.className = 'choice-btn';
+      b.innerHTML = `<b>${i+1}.</b> ${c.label}` + (c.desc?`<small>${c.desc}</small>`:'');
+      b.onclick = ()=>{ if (this._choicePick) this._choicePick(i); };
+      list.appendChild(b);
+    });
+  },
+
+  /* 事件快捷倾向按钮 */
+  buildEventQuick() {
+    const quick = [
+      { label:'从严处置', sub:'杀伐立威，但可能伤及无辜', text:'从严处置，绝不姑息' },
+      { label:'从宽安抚', sub:'怀柔感化，但可能姑息养奸', text:'从宽安抚，既往不咎' },
+      { label:'彻查到底', sub:'查明真相再断，但耗时费力', text:'命人彻查到底，务求水落石出' },
+      { label:'暂且搁置', sub:'静观其变，但此事必然发酵', text:'暂且搁置，容后再议' },
+    ];
+    const wrap = this.$('#event-quick');
+    wrap.innerHTML = '';
+    quick.forEach(q=>{
+      const b = document.createElement('button');
+      b.className = 'choice-btn';
+      b.innerHTML = `<b>${q.label}</b><small>${q.sub}</small>`;
+      b.onclick = ()=> Game.resolveEvent(q.text);
+      wrap.appendChild(b);
+    });
   },
 
   /* ─────── 叙事卡片 ─────── */

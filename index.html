@@ -92,15 +92,21 @@
         </div>
         <!-- 事件处置模式 -->
         <div id="dock-event" class="hidden">
-          <div class="dock-hint event-hint">⚠ 请对此事件作出处置（自由描述你的决定），此事没有唯一真相：</div>
-          <div class="free-inputbar">
-            <input type="text" id="event-input" placeholder="如：下令彻查 / 从轻发落 / 斩立决 / 暗中观察…" autocomplete="off">
+          <div class="dock-hint event-hint">⚠ 请对此事件作出处置——此事没有唯一真相，怎么断全在你：</div>
+          <div class="choice-list" id="event-quick"></div>
+          <div class="free-inputbar" style="margin-top:8px">
+            <input type="text" id="event-input" placeholder="或自由写下你的处置：如「先收监候审，暗中查其主使」…" autocomplete="off">
             <button class="btn btn-danger" id="event-send">下旨</button>
           </div>
         </div>
-        <!-- 选项模式 -->
+        <!-- 决策场景模式 -->
         <div id="dock-choices" class="hidden">
+          <div class="dock-hint" id="choice-hint">请做出你的决定：</div>
           <div class="choice-list" id="choice-list"></div>
+          <div class="free-inputbar" style="margin-top:8px">
+            <input type="text" id="choice-input" placeholder="也可自行决断，写下你的意思…" autocomplete="off">
+            <button class="btn btn-primary" id="choice-send">执行</button>
+          </div>
         </div>
       </div>
     </section>
