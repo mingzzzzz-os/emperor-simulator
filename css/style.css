@@ -29,6 +29,8 @@ input{font-family:inherit}
 
 /* ─────── 通用 ─────── */
 .screen{position:fixed;inset:0;display:flex;flex-direction:column}
+/* 移动端用动态视口，避开浏览器地址栏遮挡 */
+@supports (height:100dvh){.screen{height:100dvh;bottom:auto}}
 .btn{
   border:none;border-radius:6px;padding:9px 22px;font-size:15px;
   letter-spacing:2px;transition:.2s;font-weight:600;
@@ -120,6 +122,9 @@ input{font-family:inherit}
 }
 .icon-btn:hover{background:rgba(201,162,75,.2)}
 .icon-btn.wide{width:auto;padding:0 12px;border-radius:17px;font-size:12px;letter-spacing:1px}
+
+/* 手机端面板切换栏：桌面恒不显示 */
+#mobile-tabs{display:none}
 
 /* ═══════════ 主界面·三栏 ═══════════ */
 #game-main{flex:1;display:grid;grid-template-columns:250px 1fr 280px;gap:12px;padding:12px;min-height:0}
@@ -300,17 +305,179 @@ aside{display:flex;flex-direction:column;gap:12px;min-height:0;overflow-y:auto}
 ::-webkit-scrollbar-thumb{background:var(--paper-3);border-radius:5px}
 ::-webkit-scrollbar-thumb:hover{background:var(--gold-soft)}
 
-/* 响应式 */
+/* ═══════════ 响应式 ═══════════ */
+
+/* 平板：左栏 + 中栏，人物栏移到下方 */
 @media (max-width:1100px){
   #game-main{grid-template-columns:220px 1fr;grid-template-rows:1fr auto}
   #panel-people{grid-column:1/3;max-height:230px}
 }
+
+/* ─────── 手机：单栏 + 标签页，每个面板都能整屏看全 ─────── */
 @media (max-width:760px){
-  #game-main{grid-template-columns:1fr;grid-template-rows:auto 1fr auto}
-  #panel-emperor{max-height:200px}
-  .action-grid{grid-template-columns:repeat(3,1fr)}
-  .resource-bar{gap:6px}
-  .res{padding:4px 9px;font-size:12px}
-  .welcome-title{font-size:38px;letter-spacing:8px}
-  #topbar{flex-wrap:wrap}
+
+  /* 禁止横向溢出 */
+  html,body{overflow:hidden;overscroll-behavior:none}
+  #topbar,#game-main,#panel-story,#story-flow,.action-grid,.choice-list{overscroll-behavior:contain}
+
+  /* ── 标签栏 ── */
+  #mobile-tabs{
+    display:flex;flex-shrink:0;background:var(--paper-2);
+    border-bottom:1px solid var(--paper-3);
+  }
+  .mtab{
+    flex:1;-webkit-appearance:none;appearance:none;border:none;background:transparent;
+    padding:11px 4px;font-size:14px;letter-spacing:3px;font-weight:600;
+    color:var(--ink-soft);border-bottom:2px solid transparent;transition:.15s;
+  }
+  .mtab.active{color:var(--cinnabar);border-bottom-color:var(--cinnabar);background:#fbf7ec}
+
+  /* ── 三栏改单栏：只显示当前标签对应的面板，其余隐藏 ── */
+  #game-main{
+    display:flex;flex-direction:column;
+    gap:0;padding:0;min-height:0;overflow:hidden;
+  }
+  #game-main > *{display:none}
+  #game-main[data-mtab="story"]   > #panel-story,
+  #game-main[data-mtab="emperor"] > #panel-emperor,
+  #game-main[data-mtab="people"]  > #panel-people{
+    display:flex;
+  }
+  #panel-emperor,#panel-people,#panel-story{
+    flex:1 1 auto;width:100%;min-height:0;max-height:none;
+    border:none;border-radius:0;box-shadow:none;
+  }
+  #panel-emperor{padding:10px;gap:10px}
+  #panel-story{overflow:hidden}
+
+  /* ── 顶栏：两行排布，国力条横向滚动，不再挤压换行成一大坨 ── */
+  #topbar{
+    flex-wrap:wrap;gap:6px 10px;padding:8px 12px;
+    padding-top:calc(8px + env(safe-area-inset-top));
+  }
+  .time-block{min-width:0;flex:1 1 auto;order:1}
+  .time-era{font-size:17px;letter-spacing:2px;line-height:1.25}
+  .time-date{font-size:12px;letter-spacing:1px}
+  .time-turn{font-size:11px;margin-top:1px}
+  .top-actions{flex:0 0 auto;order:2;gap:6px}
+  .icon-btn{width:30px;height:30px;font-size:13px;flex:0 0 auto}
+  .icon-btn.wide{width:auto;padding:0 10px;border-radius:15px;font-size:11.5px;letter-spacing:1px}
+  .resource-bar{
+    order:3;flex:1 0 100%;justify-content:flex-start;flex-wrap:nowrap;
+    overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;
+    scrollbar-width:none;padding:1px 0;
+  }
+  .resource-bar::-webkit-scrollbar{display:none}
+  .res{flex:0 0 auto;padding:3px 10px;font-size:12px;gap:5px}
+  .res .res-ico{font-size:12px}
+  .res .res-label{letter-spacing:0}
+  .res .res-val{min-width:26px}
+
+  /* ── 叙事区 ── */
+  #story-flow{padding:14px 14px;gap:11px}
+  .story-card{font-size:14.5px;line-height:1.95}
+  .sc-narr,.sc-action,.sc-event,.sc-npc{padding:12px 14px}
+  .sc-death{padding:14px 15px}
+
+  /* ── 操作区：始终可见，按钮九宫格限高内滚 ── */
+  #action-dock{
+    padding:10px 12px;
+    padding-bottom:calc(10px + env(safe-area-inset-bottom));
+    max-height:56vh;overflow-y:auto;-webkit-overflow-scrolling:touch;
+  }
+  .dock-hint{font-size:12.5px;margin-bottom:8px;letter-spacing:0;line-height:1.7}
+  .action-grid{grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:9px}
+  .act-btn{padding:8px 2px;font-size:12.5px;letter-spacing:0;line-height:1.4}
+  .act-btn small{font-size:9.5px;margin-top:1px;line-height:1.35}
+  .free-inputbar{gap:7px}
+  .free-inputbar .btn{padding:9px 15px;font-size:13px;letter-spacing:1px;flex:0 0 auto}
+  .choice-btn{padding:10px 13px;font-size:13.5px;line-height:1.75}
+  .choice-btn small{font-size:11px}
+
+  /* iOS 聚焦时不会自动放大页面 */
+  #setup-input,#free-input,#event-input,#choice-input{font-size:16px}
+
+  /* ── 帝王面板／人物面板：内容完整展开，整屏滚动 ── */
+  .emp-card{padding:14px 12px}
+  .emp-avatar{width:60px;height:60px;font-size:34px;line-height:60px;margin-bottom:8px}
+  .emp-name{font-size:18px}
+  .panel-box{padding:12px 13px}
+  .panel-title{font-size:12.5px;letter-spacing:2px;margin-bottom:9px}
+  .attr-row{margin-bottom:8px}
+  .attr-head{font-size:12.5px}
+  .people-tabs{flex-shrink:0}
+  .ptab{padding:11px 2px;font-size:12.5px}
+  .people-list{padding:10px;gap:8px}
+  .person-card{padding:10px 11px}
+  .history-body{line-height:1.85}
+
+  /* ── 开场页 ── */
+  /* 居中容器在内容超出一屏时会裁掉顶部，改用 auto 外边距居中 */
+  #screen-welcome{justify-content:flex-start;overflow-y:auto;padding-top:calc(16px + env(safe-area-inset-top))}
+  .welcome-inner{padding:20px 16px;margin:auto 0}
+  .welcome-seal{width:74px;height:74px;font-size:46px;line-height:74px;margin-bottom:20px}
+  .welcome-title{font-size:36px;letter-spacing:8px}
+  .welcome-sub{font-size:14px;letter-spacing:2px}
+  .welcome-desc{font-size:13.5px;margin:20px 0 26px;line-height:1.95}
+  .welcome-btns{flex-wrap:wrap;gap:12px}
+  .btn-lg{padding:12px 30px;font-size:16px}
+
+  /* ── 开局向导 ── */
+  .setup-panel{width:96vw;height:min(86dvh,760px);border-radius:12px}
+  .setup-head{padding:12px 15px;font-size:13.5px;letter-spacing:2px}
+  .setup-chat{padding:16px 14px;gap:12px}
+  .chat-q,.chat-a{max-width:90%;font-size:14.5px;padding:10px 14px}
+  .chat-opt{font-size:13px;padding:8px 13px}
+  .setup-inputbar{padding:11px 12px;padding-bottom:calc(11px + env(safe-area-inset-bottom))}
+
+  /* ── 结局 ── */
+  #screen-ending{justify-content:flex-start;padding:calc(14px + env(safe-area-inset-top)) 0 calc(14px + env(safe-area-inset-bottom))}
+  .ending-panel{width:min(720px,94vw);padding:24px 18px;margin:auto 0}
+  .ending-title{font-size:26px;letter-spacing:6px}
+  .ending-sub{font-size:13px;letter-spacing:2px}
+  .ending-scene{font-size:14.5px;line-height:2;margin:18px 0}
+  .ending-stats{grid-template-columns:repeat(3,1fr);gap:7px}
+  .ending-stat b{font-size:17px}
+  .ending-btns{flex-wrap:wrap;gap:10px}
+
+  /* ── 存档弹层 ── */
+  .modal{padding:12px;align-items:flex-start}
+  .modal-box{width:100%;max-height:92dvh}
+  .modal-head{padding:12px 14px}
+  .modal-body{padding:13px 14px;font-size:13px}
+  .modal-foot{padding:11px 14px;padding-bottom:calc(11px + env(safe-area-inset-bottom))}
+  .save-code{height:120px;font-size:11px}
+  .save-file-row{gap:8px}
+
+  #toast-wrap{top:calc(88px + env(safe-area-inset-top));width:max-content;max-width:90vw}
+  .toast{font-size:12.5px;padding:8px 16px;text-align:center}
+}
+
+/* 窄屏（≤400px）：进一步收紧 */
+@media (max-width:400px){
+  .welcome-title{font-size:30px;letter-spacing:5px}
+  .welcome-seal{width:64px;height:64px;font-size:40px;line-height:64px}
+  .mtab{font-size:13px;letter-spacing:1px}
+  .act-btn{font-size:12px}
+  .act-btn small{display:none}
+  .res{padding:3px 8px;font-size:11.5px}
+  .icon-btn.wide{padding:0 8px;font-size:11px}
+  .ending-title{font-size:22px;letter-spacing:4px}
+}
+
+/* 横屏手机 / 矮屏设备（高度不足）：把纵向空间尽量让给内容 */
+@media (max-height:520px) and (max-width:900px){
+  #topbar{padding:5px 10px;gap:4px 8px}
+  .time-era{font-size:15px}
+  .time-date{font-size:11px}
+  .time-turn{display:none}
+  .resource-bar{order:1;flex:0 1 auto}
+  .time-block{order:2;flex:0 0 auto}
+  .top-actions{order:3}
+  .mtab{padding:8px 4px;font-size:13px}
+  .action-grid{grid-template-columns:repeat(6,1fr)}
+  .act-btn small{display:none}
+  #story-flow{padding:11px 12px;gap:9px}
+  .dock-hint{margin-bottom:6px}
+  .emp-avatar{width:48px;height:48px;font-size:28px;line-height:48px}
 }

@@ -9,12 +9,17 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 let pass = 0, fail = 0;
 function assert(c, m) { if (c) pass++; else { fail++; console.error('  ✗ FAIL:', m); } }
 
+/* 固定随机种子：避免死亡类随机事件让断言偶发飘红 */
+const SEED = 22;
+
 function boot() {
   const d = new JSDOM(HTML, { url: 'https://game.test/', runScripts: 'outside-only' });
   const w = d.window;
   w.TextEncoder = TextEncoder; w.TextDecoder = TextDecoder;
   w.CompressionStream = CompressionStream; w.DecompressionStream = DecompressionStream;
   w.Response = Response; w.Blob = Blob;
+  let s = SEED >>> 0;
+  w.Math.random = () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
   w.eval(JS('data.js') + ';globalThis.DATA=DATA;');
   w.eval(JS('engine.js') + ';globalThis.Game=Game;');
   w.eval(JS('ui.js') + ';globalThis.UI=UI;');

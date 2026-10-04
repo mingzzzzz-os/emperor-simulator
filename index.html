@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>帝王模拟器 · 千秋</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600;700;900&family=Ma+Shan+Zheng&display=swap" rel="stylesheet">
@@ -61,7 +61,14 @@
     </div>
   </header>
 
-  <main id="game-main">
+  <!-- 手机端面板切换（桌面端隐藏） -->
+  <nav id="mobile-tabs">
+    <button class="mtab active" data-mtab="story">朝堂</button>
+    <button class="mtab" data-mtab="emperor">帝王</button>
+    <button class="mtab" data-mtab="people">人物</button>
+  </nav>
+
+  <main id="game-main" data-mtab="story">
     <!-- 左栏：帝王面板 -->
     <aside id="panel-emperor">
       <div class="emp-card">

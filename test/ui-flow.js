@@ -13,6 +13,9 @@ const assert = (cond, msg) => { if (cond) { pass++; } else { fail++; console.err
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const tick = () => sleep(12);
 
+/* 固定随机种子：游戏内含随机死亡（如服丹中毒），不定种子会让断言偶发飘红 */
+const SEED = 22;
+
 /* 起一台「设备」 */
 function boot() {
   const dom = new JSDOM(HTML, { url: 'https://game.test/', runScripts: 'outside-only' });
@@ -24,6 +27,8 @@ function boot() {
   w.DecompressionStream = DecompressionStream;
   w.Response = Response;
   w.Blob = Blob;
+  let s = SEED >>> 0;
+  w.Math.random = () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
   w.eval(JS('data.js') + ';globalThis.DATA = DATA;');
   w.eval(JS('engine.js') + ';globalThis.Game = Game;');
   w.eval(JS('ui.js') + ';globalThis.UI = UI;');

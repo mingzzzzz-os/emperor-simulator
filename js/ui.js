@@ -72,6 +72,27 @@ const UI = {
     });
     // 行动网格
     this.buildActionGrid();
+    // 手机端面板切换
+    this.initMobileTabs();
+  },
+
+  /* ─────── 手机端：三个面板切换整屏浏览 ─────── */
+  isMobile(){
+    try { return !!(window.matchMedia && window.matchMedia('(max-width:760px)').matches); }
+    catch(e){ return false; }
+  },
+  initMobileTabs(){
+    this.$$('#mobile-tabs .mtab').forEach(b=>{
+      b.onclick = ()=> this.setMobileTab(b.dataset.mtab);
+    });
+    this.setMobileTab('story');
+  },
+  setMobileTab(name){
+    const m = this.$('#game-main'); if (!m) return;
+    m.dataset.mtab = name;
+    this.$$('#mobile-tabs .mtab').forEach(b=>{
+      b.classList.toggle('active', b.dataset.mtab === name);
+    });
   },
 
   showScreen(name) {
@@ -82,6 +103,7 @@ const UI = {
 
   enterGame() {
     this.showScreen('game');
+    this.setMobileTab('story');
     this.setDockMode(Game.S.pendingEvent ? 'event' : 'actions');
     this.renderAll();
     setTimeout(()=>this.scrollStory(), 60);
@@ -394,7 +416,15 @@ const UI = {
     this.$('#story-flow').appendChild(d);
     this.scrollStory();
   },
-  scrollStory(){ const f = this.$('#story-flow'); f.scrollTop = f.scrollHeight; },
+  scrollStory(){
+    const f = this.$('#story-flow'); f.scrollTop = f.scrollHeight;
+    // 手机端：有待你落笔的决策时，自动切回朝堂，免得人在别的标签页漏了批复
+    const S = Game.S;
+    if (this.isMobile() && S && !S.dead &&
+        (S.pendingEvent || S.currentScene || S.currentPetition || S.pendingPicker)) {
+      this.setMobileTab('story');
+    }
+  },
 
   toast(msg) {
     const t = document.createElement('div');

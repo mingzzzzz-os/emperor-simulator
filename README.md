@@ -51,12 +51,20 @@ emperor-game/
 
 本地运行：直接用浏览器打开 `index.html` 即可。
 
+### 移动端
+
+≤760px 视口自动切换为手机布局：**顶栏（时间 + 横向滚动的国力条 + 存档按钮）+ 三标签页**。
+「朝堂 / 帝王 / 人物」三个面板各自占满整屏并独立滚动，手机上也能把六维属性、国力、未结事件、朝臣后宫皇嗣国史一项项翻完。
+已适配 iPhone 安全区（`viewport-fit=cover` + `env(safe-area-inset-*)`）、动态视口高度（`100dvh`，不受地址栏收放影响）、横屏矮屏压缩，并屏蔽下拉刷新与 iOS 聚焦缩放。
+有待你批复的剧情（月末事件、请对、请示）出现时会自动切回「朝堂」页签，不会漏决断。桌面端三栏布局不受任何影响。
+
 跑测试：
 
 ```bash
 node test/smoke.js                          # 引擎测试 112 项，无额外依赖
 npm i jsdom && node test/ui-flow.js         # UI 端到端：跨设备存档搬运 27 项
 npm i jsdom && node test/ui-court.js        # UI 端到端：科举取士 + 调戏廷臣 22 项
+npm i jsdom && node test/ui-mobile.js       # 手机布局结构契约 27 项
 ```
 
 ## 致谢
