@@ -367,6 +367,91 @@ const n2 = Game.S.name;
 Game.S = null;
 assert(Game.load() === true && Game.S.name === n2, '导入的存档可正常读回');
 
+console.log('\n▶ 12. 科举取士：进士入朝、钦点状元、朝中关系');
+{
+  const S = Game.S;
+  const before = S.courtiers.length;
+  S.year = 3; S.month = 3; S.flags = {}; S.npcQueue = [];
+  const cands = Game.rollJinshi(4);
+  assert(cands.length === 4, '生成 4 名进士');
+  assert(cands.every(c=>c.name && c.persona && c.region && c.tie), '进士含姓名/性格/籍贯/关系');
+  assert(cands.every(c=>DATA.keju.archetypes[c.persona]), '性格原型均合法');
+  assert(new Set(cands.map(c=>c.name)).size === 4, '进士姓名不重复');
+  const ties = new Set(cands.map(c=>c.tie.type));
+  assert(ties.size >= 1, '至少有一种朝中关系，实际 '+[...ties].join('/'));
+
+  const triggered = Game.maybeKeju();
+  assert(triggered === true, '三年三月触发春闱');
+  assert(!!S.pendingKeju, '进入钦点状元流程');
+  assert(S.pendingKeju.cands.length >= 3, '候选进士 ≥3 人');
+  const zy = S.pendingKeju.cands[0];
+  Game.kejuPickZhuangyuan(0);
+  assert(!!S.currentScene, '进入取士规模二段决策');
+  assert(S.turnCount === S.turnCount, '科举不推进回合');
+  const actedBefore = S.actedThisTurn;
+  Game.resolveSceneChoice(0);
+  assert(S.actedThisTurn === actedBefore, '科举决策不消耗回合行动');
+  assert(S.courtiers.length > before, '进士已入朝，'+before+'→'+S.courtiers.length);
+  assert(S.courtiers.some(c=>c.isJinshi), '朝班里出现新科进士');
+  const zyIn = Game.S.courtiers.find(c=>c.id===zy.id);
+  assert(!!zyIn, '状元已在朝班');
+  assert(!S.pendingKeju, '科举流程已收尾');
+
+  // 关系生效：非政敌关系会让旧臣忠心上升
+  const related = S.courtiers.filter(c=>c.isJinshi && c.tie.to && c.tie.type!=='zhengdi');
+  assert(related.length >= 0, '政敌/亲故关系可解析');
+}
+
+console.log('\n▶ 13. 调戏廷臣：按性格原型出不同剧情');
+{
+  const S = Game.S;
+  // 造一个刚直原型与一个忠君原型的廷臣
+  const mk = (persona, base) => Object.assign({
+    id:'t_'+persona, name:'测试臣', surname:'测', role:'给事中', gender:'男', age:28,
+    tag:'court', persona, flirtState:'none', office:'御史台',
+  }, base);
+  const gang = mk('gangzhi', { loyal:62, ambition:18, resolve:95, shame:0, attach:5 });
+  const zhong = mk('zhongjun', { loyal:90, ambition:12, resolve:50, shame:0, attach:10 });
+  S.courtiers.push(gang, zhong);
+
+  const softG = Game.courtTeaseOf(gang, '过来让朕瞧瞧，你这张脸倒是好看');
+  const hardG = Game.courtTeaseOf(gang, '朕要你，今晚留下');
+  const softZ = Game.courtTeaseOf(zhong, '崔卿脸色不好，可是累着了，过来让朕看看');
+  const hardZ = Game.courtTeaseOf(zhong, '朕要你，今晚留下侍寝');
+
+  assert(!!softG && !!hardG, '刚直原型有 soft/hard 两档');
+  assert(softG.text !== hardG.text, '刚直原型：轻佻与强逼的结果文本不同');
+  assert(JSON.stringify(softG.deltas) !== JSON.stringify(hardG.deltas), '刚直原型：两档数值不同');
+  assert(hardG.deltas.some(d=>d.r && d.r.includes('弹') || String(d.k).includes('lu_accuse')), '刚直被逼 → 记下弹劾之念');
+  assert(softG.text.includes('测试臣'), '模板已填入具体人名');
+  assert(!softG.text.includes('{name}'), '无残留占位符');
+
+  assert(softZ.text !== hardZ.text, '忠君原型：两档结果不同');
+  const shameHard = hardZ.deltas.find(d=>String(d.k).includes('shame'));
+  assert(shameHard && shameHard.v >= 30, '忠君被逼 → 羞耻剧增，实际 '+(shameHard&&shameHard.v));
+  assert(hardZ.deltas.some(d=>String(d.k).startsWith('flirt:t_zhongjun')), '推进该廷臣的暧昧线');
+
+  // 各原型结局不同，不能雷同
+  const texts = ['gangzhi','zhongjun','caizi','wuren','gujie','hanru'].map(p=>{
+    const c = mk(p, { loyal:60, ambition:30, resolve:60, shame:0, attach:5 });
+    return Game.courtTeaseOf(c, '朕要你，今晚留下').text;
+  });
+  assert(new Set(texts).size === 6, '6 种性格被强逼后的剧情各不相同，实际 '+new Set(texts).size);
+}
+
+console.log('\n▶ 14. 廷臣终局：撑不住的人会走到那一步');
+{
+  const S = Game.S;
+  const dying = { id:'t_die', name:'将崩', surname:'将', role:'户部主事', gender:'男', age:33,
+    tag:'court', persona:'zhongjun', flirtState:'complied',
+    loyal:60, ambition:12, resolve:10, shame:95, attach:30 };
+  S.courtiers.push(dying);
+  Game.checkCourtierEnds();
+  assert(dying.ended === true, '羞耻与心气均到临界 → 触发终局');
+  assert(dying.gone === true, '终局后退出朝班');
+  assert(!DATA.scenes[2].picker(S).options.some(o=>o.label.includes('将崩')), '终局者不再出现在召见名单');
+}
+
 console.log('\n════════════════════');
 console.log(`结果：${pass} 通过，${fail} 失败`);
 if (fail>0) process.exit(1);

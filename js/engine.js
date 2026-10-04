@@ -40,6 +40,7 @@ const Game = {
     return { weiyan:'威严', shouwan:'手腕', rende:'仁德', taolue:'韬略', jingshen:'精力', xinxing:'心性',
       gold:'国库', army:'军队', people:'民心', power_minister:'权臣', hougong:'后宫', zongshi:'宗室',
       loyal:'忠心', ambition:'野心', favor:'宠爱',
+      shame:'羞耻', resolve:'心气', attach:'情分',
       zhi:'智', wu:'武', de:'德', dan:'胆' }[k] || k;
   },
 
@@ -78,6 +79,17 @@ const Game = {
         t[field] = this.clamp((t[field]||0) + v);
         heirName = t.name;
         label = this.attrLabel(field);
+      } else if (k.startsWith('flirt:')) {
+        // 廷臣暧昧线推进：flirt:<id>:<阶段>
+        const [, id, stage] = k.split(':');
+        const t = this.npc(id); if (!t) continue;
+        const prev = t.flirtState || 'none';
+        t.flirtState = stage;
+        if (!silent && stage !== prev) {
+          const txt = DATA.flirtStateText[stage] || stage;
+          chips.push({ text:`${t.name}·${txt}`, up:stage!=='refused', reason:r });
+        }
+        continue;
       } else if (k.startsWith('flag_')) {
         this.S.flags[k.slice(5)] = v; continue;
       } else if (k === 'gold') {
@@ -224,13 +236,202 @@ const Game = {
       const hm = S.harem.find(h=>h.id===opt.key);
       if (hm && hm.persona) plist = def.pool['_persona:'+hm.persona];
     }
+    let courtier = null, chosen = null;
+    if (String(opt.key).startsWith('court:')) {
+      // 廷臣暧昧线：按性格 + 当前阶段取专属剧情，再套上这个人的名字
+      courtier = this.npc(opt.key.slice(6));
+      if (courtier) {
+        const pool = this.courtFlirtPool(courtier);
+        if (pool && pool.length) { chosen = this.fillScene(this.rand(pool), courtier); plist = [chosen]; }
+      }
+    }
     if (!plist || !plist.length) {
       S.busy = false;
       UI.pushCard('sys', '今夜不巧，那边宫门已闭，你折返了回去。');
       UI.setDockMode('actions'); UI.renderAll();
       return;
     }
-    this.presentScene(pk.actionId, this.rand(plist), null, pk.actionId===4 ? opt.key : null);
+    this.presentScene(pk.actionId, chosen || this.rand(plist), null,
+      pk.actionId===4 ? opt.key : (courtier ? courtier.id : null));
+  },
+
+  /* ═══════════ 科举取士 ═══════════ */
+  /* 生成一榜进士：各有性格原型、籍贯家世，以及与朝中旧臣的关系 */
+  rollJinshi(n) {
+    const S = this.S, K = DATA.keju;
+    const keys = Object.keys(K.archetypes);
+    const used = new Set(S.courtiers.map(c=>c.name));
+    const out = [];
+    for (let i=0;i<n;i++) {
+      const persona = this.rand(keys);
+      const arch = K.archetypes[persona];
+      let surname = this.rand(K.surnames), name = this.rand(K.maleNames);
+      let guard = 0;
+      while (used.has(surname+name) && guard++ < 40) { surname = this.rand(K.surnames); name = this.rand(K.maleNames); }
+      used.add(surname+name);
+      // 与旧臣的关系：孤寒者无靠山，其余各依其类
+      const seniors = S.courtiers.filter(c=>c.tag==='court' && c.persona && c.persona!=='neishi');
+      const tiePool = K.ties.filter(t=> t.type!=='hanmen' ? seniors.length>0 : true);
+      const tie = this.rand(tiePool);
+      const target = tie.type==='hanmen' ? null : this.rand(seniors);
+      out.push({
+        id:'js_'+Date.now().toString(36)+i+Math.floor(Math.random()*99),
+        name: surname+name, surname, gender:'男',
+        age: 19 + Math.floor(Math.random()*14),
+        role: arch.role, office: arch.office, persona,
+        trait: arch.trait, origin: arch.origin,
+        region: this.rand(K.regions),
+        family: this.rand(K.family),
+        tie: { type:tie.type, label:tie.label, note:tie.note, to: target?target.id:null,
+               text: tie.make(surname+name, target || {name:'陛下'}) },
+        tag:'court', isJinshi:true, jinshiYear:S.year, flirtState:'none',
+        ...JSON.parse(JSON.stringify(arch.base)),
+      });
+    }
+    return out;
+  },
+
+  maybeKeju() {
+    const S = this.S, K = DATA.keju;
+    if (!K || S.dead) return false;
+    if (S.year % K.interval !== 0 || S.month !== K.month) return false;
+    if (S.flags['keju_'+S.year]) return false;
+    S.flags['keju_'+S.year] = 1;
+    const cands = this.rollJinshi(3 + Math.floor(Math.random()*3));
+    S.pendingKeju = { cands, zhuangyuan:null };
+    S.busy = true;
+    const list = cands.map((c,i)=>
+      `<div class="sc-head">${i+1}. ${c.name} · ${c.age}岁 · ${c.region}${c.family.label}</div>` +
+      `${c.origin}，${c.trait}。<br>${c.tie.text}`
+    ).join('<br><br>');
+    UI.pushCard('narr',
+      `<b>📜 春闱放榜</b>（${S.year}年三月）<br>礼部呈上这一科的殿试名录，进士若干，各人底细皆录于后。<br><br>${list}` +
+      `<br><br><div class="sc-head">谁来当这一科的状元？</div>状元入翰林，前程最宽；其余分授各部。你点谁，谁便记你这一份恩。`);
+    UI.showChoices(
+      cands.map(c=>({ label:`钦点状元 · ${c.name}（${c.trait}）`, desc:`${c.region} · ${c.tie.label}` })),
+      i => this.kejuPickZhuangyuan(i),
+      t => this.kejuPickFree(t));
+    UI.setDockMode('choices'); UI.renderAll();
+    return true;
+  },
+
+  kejuPickFree(text) {
+    const S = this.S, pk = S.pendingKeju; if (!pk) return;
+    let best = -1, bs = 0;
+    pk.cands.forEach((c,i)=>{ if (text.includes(c.name)) { best=i; bs=99; } });
+    if (best < 0) {
+      pk.cands.forEach((c,i)=>{
+        const s = [c.region, c.trait.slice(0,2), c.family.label].filter(w=>text.includes(w)).length;
+        if (s > bs) { bs = s; best = i; }
+      });
+    }
+    if (best < 0) best = Math.floor(Math.random()*pk.cands.length);
+    this.kejuPickZhuangyuan(best, `「${text}」`);
+  },
+
+  kejuPickZhuangyuan(i, labelText) {
+    const S = this.S, pk = S.pendingKeju; if (!pk) return;
+    const zy = pk.cands[i];
+    pk.zhuangyuan = zy.id;
+    if (labelText) UI.pushCard('narr', `<b>你的意思：</b>${labelText}`, '');
+    else UI.pushCard('narr', `<b>你的钦点：</b>状元 ${zy.name}`, '');
+
+    // 第二步：取士规模
+    const scene = { noTurn:true, text:'殿试已毕，接下来是取士的数目。礼部把两份清单都摆在了御案上。',
+      choices:[
+        { label:'广取人才：一榜尽录，另恩科加取十人', keys:['广','尽录','加取','多'],
+          result:{ text:`你朱笔一挥，一榜尽录，又开恩科加取十人。<br>捷报传出，天下读书人欢呼雀跃，都说陛下右文。<br>只是吏部随后呈上的俸册叫人皱眉：这一科新官的俸禄，一年要多支${S.gold>400?'八':'五'}万余两。<br>而其中有个叫<b>${zy.name}</b>的年轻人，站在新科进士的最前排，把你的名字念了三遍。`,
+            deltas:[{k:'people',v:+5,r:'右文之主，士林归心'},{k:'gold',v:-18,r:'冗官俸禄'},
+              {k:'power_minister',v:+2,r:'新官各投其主'},{k:'shouwan',v:+1,r:'恩出于上'},
+              {k:'npc:'+zy.id+':loyal',v:+6,r:'钦点之恩'}] } },
+        { label:'从严取士：只留才学最优者三人', keys:['严','三人','少','精简'],
+          result:{ text:`你砍去了大半名录，只留三人。<br>落第者怨声载道，有人把落卷贴在了贡院墙上，说主考有私。<br>但留下来的三个，确实都是真才。<b>${zy.name}</b>捧着敕牒退出去时，手指把纸边都攥皱了。<br>吏部暗暗松了口气：今年的俸册，好看多了。`,
+            deltas:[{k:'people',v:-2,r:'落第者怨'},{k:'gold',v:+5,r:'省下冗俸'},
+              {k:'shouwan',v:+2,r:'铨选得宜'},{k:'npc:'+zy.id+':loyal',v:+4,r:'脱颖而出'}] } },
+        { label:'照顾门第：世家子弟优先，以安其心', keys:['门第','世家','优先','照顾'],
+          result:{ text:`你把世家子弟往前排了排。<br>朝中几家大族当夜就递了谢表，措辞恭顺得近乎谄媚。可第二天，御史台的折子也到了——有人参你「以门第取人，塞寒门之路」。<br><b>${zy.name}</b>是否真有才学，反倒没人提了。`,
+            deltas:[{k:'power_minister',v:+6,r:'世族感恩，势力渐张'},{k:'people',v:-4,r:'寒门失望，物议不平'},
+              {k:'weiyan',v:-2,r:'取士不公之名'},{k:'gold',v:+10,r:'世家报效'}] } },
+      ],
+      free:{ text:'你按部就班点了名录，没有多取，也没有多砍。这一科平平淡淡地过去了。',
+        deltas:[{k:'shouwan',v:+1,r:'循例而行'}] } };
+    this.presentScene('keju', scene, null, null);
+  },
+
+  /* 科举收尾：进士入朝，关系生效 */
+  kejuFinish() {
+    const S = this.S, pk = S.pendingKeju; if (!pk) return;
+    S.pendingKeju = null; S.busy = false;
+    const zy = pk.cands.find(c=>c.id===pk.zhuangyuan) || pk.cands[0];
+    const lines = [];
+    pk.cands.forEach(c=>{
+      c.loyal = this.clamp((c.loyal||50) + (c.id===zy.id ? 0 : -2));
+      if (c.id === zy.id) { c.role = '翰林修撰（状元）'; c.office = '翰林院'; }
+      S.courtiers.push(c);
+      lines.push(`<b>${c.name}</b>，${c.age}岁，${c.region}人，授${c.role}${c.id===zy.id?'（<b>状元</b>）':''}`);
+    });
+    // 关系生效：座师/同乡/举荐/姻亲 → 旧官受益；政敌 → 旧官受损
+    const tieEffects = [];
+    pk.cands.forEach(c=>{
+      const senior = c.tie.to ? this.npc(c.tie.to) : null;
+      if (!senior) return;
+      if (c.tie.type === 'zhengdi') {
+        senior.loyal = this.clamp((senior.loyal||50) - 3);
+        tieEffects.push(`${senior.name}得知${c.name}在策论里驳他，冷笑了半晌，什么也没说。`);
+      } else {
+        const gain = c.id===zy.id ? 6 : 3;
+        senior.loyal = this.clamp((senior.loyal||50) + gain);
+        senior.ambition = this.clamp((senior.ambition||30) + (c.tie.type==='shicheng'?3:1));
+        tieEffects.push(`${senior.name}与${c.name}有${c.tie.label}之谊，朝中又多了一层牵扯。`);
+      }
+    });
+    UI.pushCard('npc', `🎓 <b>新科入朝</b>：${lines.join('；')}。<br>` +
+      (tieEffects.length ? tieEffects.join('<br>') + '<br>' : '') +
+      `日后召见，他们便在「召见大臣」之列。`);
+    this.save();
+    UI.setDockMode('actions'); UI.renderAll();
+  },
+
+  /* 廷臣被调戏：按性格原型出专属剧情。
+     soft = 言语轻佻点到为止；hard = 明示所求、以势相压 */
+  courtTeaseOf(c, text) {
+    const lib = DATA.courtTease && DATA.courtTease[c.persona];
+    if (!lib) return null;
+    const hardWords = DATA.courtTeaseHardWords || [];
+    const t = String(text||'');
+    const hard = hardWords.some(w=>t.includes(w));
+    const raw = hard ? (lib.hard||lib.soft) : (lib.soft||lib.hard);
+    if (!raw) return null;
+    const r = this.fillScene(raw, c);
+    if (!c.flirtState || c.flirtState === 'none' || c.flirtState === 'approach') {
+      r.deltas = (r.deltas||[]).concat([{ k:'flirt:'+c.id+':'+(hard?'probe':'approach'), v:1, r:hard?'话已挑明':'你已试探' }]);
+    }
+    return r;
+  },
+
+  /* 廷臣的终局：有人撑不住，会走到那一步 */
+  checkCourtierEnds() {
+    const S = this.S;
+    for (const c of S.courtiers) {
+      if (!c.persona || c.ended) continue;
+      const end = (DATA.courtierEnds||{})[c.persona];
+      if (!end || !end.cond(c)) continue;
+      c.ended = true;
+      const t = this.fillTpl(end.text, c);
+      const chips = this.applyDeltas(end.deltas.map(d=>({...d, k:this.fillTpl(d.k, c)})));
+      UI.pushCard('narr', `<div class="sc-head">⚫ ${this.fillTpl(end.title, c)}</div>${t}`, chips);
+      // 从朝班中除名
+      c.gone = true;
+      UI.pushCard('sys', `${c.name}自此不在朝班之中。`);
+    }
+  },
+
+  /* 廷臣暧昧线：按当前状态决定演到哪一段 */
+  courtFlirtPool(c) {
+    const lib = DATA.courtFlirt[c.persona];
+    if (!lib) return null;
+    const stage = { none:'talk', approach:'probe', probe:'press' }[c.flirtState||'none'] || 'later';
+    return lib[stage] || lib.later || lib.talk;
   },
 
   pickSceneTargetFree(text) {
@@ -262,9 +463,10 @@ const Game = {
   presentScene(actionId, scene, heirId, memberId) {
     const S = this.S;
     S.busy = true;
-    S.currentScene = { actionId, scene, heirId, memberId: memberId||null };
+    S.currentScene = { actionId, scene, heirId, memberId: memberId||null, noTurn: !!scene.noTurn };
     const text = typeof scene.text === 'function' ? scene.text(S) : scene.text;
-    UI.pushActionCard(DATA.actions.find(a=>a.id===actionId).name, text, null);
+    const actName = (DATA.actions.find(a=>a.id===actionId)||{name:'朝政'}).name;
+    UI.pushActionCard(actName, text, null);
     const choices = typeof scene.choices === 'function' ? scene.choices(S) : scene.choices;
     UI.showChoices(choices.map(c=>({label:c.label, desc:c.desc})),
       i=>this.resolveSceneChoice(i),
@@ -295,20 +497,60 @@ const Game = {
       return;
     }
     const sceneText = typeof cs.scene.text==='function' ? cs.scene.text(S) : cs.scene.text;
-    const npcId = this.sceneNpcId(sceneText);
+    const npcId = this.sceneNpcId(sceneText) || cs.memberId;
+    // 调戏廷臣：按对方性格原型演专属剧情，而非套用通用模板
+    const target = npcId ? this.npc(npcId) : null;
+    const intents = this.analyzeIntent(text);
+    const wantsFlirt = intents.length && (intents[0].name === 'tease' || intents[0].name === 'affection');
+    if (target && wantsFlirt && target.persona) {
+      const r = this.courtTeaseOf(target, text);
+      if (r) { this.finishScene(r, `「${text}」`); return; }
+    }
     const kind = cs.actionId===11 ? 'heir' : 'scene';
     const dyn = this.interpretFree(text, { npcId, kind });
     this.finishScene(dyn, `「${text}」`);
   },
 
+  /* ─────── 性格原型模板：把 {name}/{role}/{surname}/{id} 填成具体的人 ─────── */
+  fillTpl(t, c) {
+    if (typeof t !== 'string' || !c) return t;
+    return t.replace(/\{name\}/g, c.name)
+            .replace(/\{role\}/g, c.role || '')
+            .replace(/\{surname\}/g, (c.surname || String(c.name||'').charAt(0)))
+            .replace(/\{id\}/g, c.id);
+  },
+
+  fillScene(scene, c) {
+    const out = JSON.parse(JSON.stringify(scene));
+    const walk = o => {
+      if (Array.isArray(o)) { o.forEach(walk); return; }
+      if (o && typeof o === 'object') {
+        for (const k of Object.keys(o)) {
+          const v = o[k];
+          if (typeof v === 'string' && (k==='text'||k==='r'||k==='label'||k==='k')) o[k] = this.fillTpl(v, c);
+          else walk(v);
+        }
+      }
+    };
+    walk(out);
+    return out;
+  },
+
   finishScene(result, labelText) {
     const S = this.S, cs = S.currentScene; if (!cs) return;
-    const act = DATA.actions.find(a=>a.id===cs.actionId);
+    const act = DATA.actions.find(a=>a.id===cs.actionId) || { name:'春闱', energy:0 };
     if (labelText) UI.pushCard('narr', `<b>你的决定：</b>${labelText}`, '');
     const rtext = typeof result.text==='function' ? result.text(S) : result.text;
-    const chips = this.applyDeltas([{k:'jingshen', v:act.energy, r:act.energy<0?'行动耗神':'静养回神'}, ...(result.deltas||[])]);
+    const energy = cs.noTurn ? [] : [{k:'jingshen', v:act.energy, r:act.energy<0?'行动耗神':'静养回神'}];
+    const chips = this.applyDeltas([...energy, ...(result.deltas||[])]);
     UI.pushActionCard(`${act.name} · 结果`, rtext, chips);
     S.currentScene = null; S.busy = false;
+    if (cs.noTurn) {   // 科举等流程性决策不消耗回合行动
+      if (cs.actionId === 'keju') this.kejuFinish();
+      else { UI.setDockMode('actions'); UI.renderAll(); }
+      this.checkDeath();
+      return;
+    }
     S.pickedActions.push(cs.actionId);
     S.actedThisTurn++;
     UI.setDockMode('actions');
@@ -605,11 +847,18 @@ const Game = {
     }
 
     // 5) NPC 纯信息动向（无需决策）
-    const news = DATA.npcNews.filter(a=>a.cond(S));
+    const news = DATA.npcNews.filter(a=>{
+      let ok = false; try { ok = a.cond(S); } catch(e){ ok = false; }
+      if (!ok) return false;
+      // 动态文本（涉及具体人物）可能为 null，表示这一条此刻讲不出名目
+      const t = typeof a.text==='function' ? a.text(S) : a.text;
+      return !!t;
+    });
     if (news.length && this.chance(0.7)) {
       const a = this.rand(news);
+      const t = typeof a.text==='function' ? a.text(S) : a.text;
       const chips = this.applyDeltas(a.deltas);
-      UI.pushNpcCard(a.text, chips);
+      UI.pushNpcCard(t, chips);
     }
     // 后宫争宠小动作
     if (this.chance(0.3) && S.harem.length>1) {
@@ -632,9 +881,15 @@ const Game = {
       xiao.ambition = this.clamp(xiao.ambition + 1);
     }
 
+    // 9) 廷臣终局判定（有人撑不住了）
+    this.checkCourtierEnds();
+
     UI.renderAll();
     this.save();
     if (this.checkDeath()) return;
+
+    // 10) 春闱：三年一科，钦点状元、定取士规模
+    if (this.maybeKeju()) return;
 
     // 6) NPC 请示队列（必须玩家批复，不得代为决断）
     const petitions = DATA.npcPetitions.filter(p=>p.cond(S));
