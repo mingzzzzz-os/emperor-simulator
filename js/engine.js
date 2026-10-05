@@ -460,6 +460,37 @@ const Game = {
     UI.setDockMode('actions'); UI.renderAll();
   },
 
+  /* 明显是在点某个选项时：结果仍要与措辞挂钩（语气轻重、额外安排、在场人的神色） */
+  shapeChoiceResult(result, text, actors, choiceKeys, mult) {
+    const out = {
+      text: (typeof result.text === 'function' ? result.text(this.S) : result.text),
+      deltas: [],
+    };
+    for (const d of (result.deltas || [])) {
+      const kk = String(d.k || '');
+      const scalable = typeof d.v === 'number' && !kk.startsWith('flag_') && !kk.startsWith('_');
+      out.deltas.push(scalable ? { ...d, v: (Math.round(d.v * mult) || d.v) } : { ...d });
+    }
+    const intents = this.analyzeIntent(text);
+    const keys = choiceKeys || [];
+    const extra = intents.find(x => x.score >= 2 && DATA.freeIntents.addons[x.name]
+      && !(DATA.freeIntents.words[x.name] || []).some(w => keys.indexOf(w) >= 0 && text.includes(w)));
+    let tail = '';
+    if (extra) {
+      const add = DATA.freeIntents.addons[extra.name];
+      tail += '<br>' + add.text;
+      for (const d of add.deltas) out.deltas.push({ ...d, v: (Math.round(d.v * 0.5 * mult) || d.v) });
+    }
+    if (actors && actors.main && String(out.text).indexOf(actors.main.name) < 0) {
+      const r = this.reactionOf(actors.main, intents[0] ? intents[0].name : null, true);
+      if (r) tail += '<br>' + r;
+    }
+    if (tail) out.text = out.text + tail;
+    if (mult > 1) out.deltas.push({ k: 'weiyan', v: +1, r: '措辞峻烈，人人自危' });
+    if (mult < 1) out.deltas.push({ k: 'xinxing', v: +1, r: '留了余地' });
+    return out;
+  },
+
   presentScene(actionId, scene, heirId, memberId) {
     const S = this.S;
     S.busy = true;
@@ -490,24 +521,29 @@ const Game = {
       const s = (c.keys||[]).filter(w=>text.includes(w)).length;
       if (s > bs) { bs = s; best = c; }
     }
-    // 强匹配（≥2个关键词，或极短的明确指令）才视为选择该项；
-    // 否则走语义解析，按你的措辞生成专属结果
-    if (best && (bs >= 2 || (bs >= 1 && text.length <= 6))) {
-      this.finishScene(best.result, `「${text}」`);
+    // 只有在你把话说到和某一条路子几乎一模一样（≥3个关键词/极短口令）时，才算点了那一项；
+    // 否则一律走语义解析——你的措辞要有它自己的下场
+    if (best && (bs >= 3 || (bs >= 2 && text.length <= 6))) {
+      this.pushUnderstanding(this.understoodLine(intents, actors, this.intensityOf(text)));
+      this.finishScene(this.shapeChoiceResult(best.result, text, actors, best.keys || [], this.intensityOf(text)), `「${text}」`);
       return;
     }
     const sceneText = typeof cs.scene.text==='function' ? cs.scene.text(S) : cs.scene.text;
-    const npcId = this.sceneNpcId(sceneText) || cs.memberId;
+    // 先看玩家这句话点了谁的名，再看现场站着的是谁
+    const principalId = this.principalOf(cs.scene);
+    const actors = this.bindActors(text, { npcId: cs.memberId || this.sceneNpcId(sceneText), principalId, fallbackText: sceneText });
+    const npcId = actors.mainId;
+    const topic = this.topicOf(cs.actionId, sceneText);
     // 调戏廷臣：按对方性格原型演专属剧情，而非套用通用模板
     const target = npcId ? this.npc(npcId) : null;
     const intents = this.analyzeIntent(text);
     const wantsFlirt = intents.length && (intents[0].name === 'tease' || intents[0].name === 'affection');
     if (target && wantsFlirt && target.persona) {
       const r = this.courtTeaseOf(target, text);
-      if (r) { this.finishScene(r, `「${text}」`); return; }
+      if (r) { this.pushUnderstanding(this.understoodLine(intents, actors, this.intensityOf(text))); this.finishScene(r, `「${text}」`); return; }
     }
     const kind = cs.actionId===11 ? 'heir' : 'scene';
-    const dyn = this.interpretFree(text, { npcId, kind });
+    const dyn = this.interpretFree(text, { npcId, kind, actors, topic, sceneText, actionId: cs.actionId });
     this.finishScene(dyn, `「${text}」`);
   },
 
@@ -588,26 +624,53 @@ const Game = {
   },
 
   /* ─────── 自由批复语义解析 ─────── */
-  /* 把玩家的话拆成意图（按强度排序） */
+  /* 把玩家的话拆成意图（按强度排序）
+     规则：长短语优先消耗——"不准"先吃掉"准"，不会再被当成应允；
+     否定词紧贴在前 → 语义反转（"别罚"＝从宽）；就是通知也是有限度的。 */
   analyzeIntent(text) {
-    const res = [];
-    for (const [name, words] of Object.entries(DATA.freeIntents.words)) {
-      let score = 0;
-      for (const w of words) if (text.includes(w)) score += w.length >= 2 ? 2 : 1;
-      if (score > 0) res.push({ name, score });
+    text = String(text || '');
+    const FI = DATA.freeIntents || {};
+    const flat = [];
+    for (const [name, words] of Object.entries(FI.words || {})) {
+      for (const w of words) if (w) flat.push({ name, w });
     }
-    // “不准”含“准”：拒绝与应允同时命中时，拒绝优先
-    const r = res.find(x=>x.name==='refuse'), g = res.find(x=>x.name==='grant');
-    if (r && g) r.score += 2;
-    res.sort((a,b)=>b.score-a.score);
-    return res;
+    flat.sort((a, b) => b.w.length - a.w.length);
+    const spans = [], recOf = {};
+    const bump = (name, add, neg) => {
+      if (!recOf[name]) recOf[name] = { name, score: 0, hits: 0, neg: 0 };
+      recOf[name].score += add; recOf[name].hits++; if (neg) recOf[name].neg++;
+    };
+    for (const it of flat) {
+      let from = 0, i;
+      while ((i = text.indexOf(it.w, from)) >= 0) {
+        const len = it.w.length;
+        const overlapped = spans.some(s => i < s.e && i + len > s.s);
+        if (!overlapped) {
+          const pre = text.slice(Math.max(0, i - 2), i);
+          const neg = (FI.negators || []).some(n => pre.endsWith(n)) || ['别', '勿', '莫'].indexOf(pre) >= 0;
+          bump(it.name, len >= 2 ? 3 : 1, neg);
+          spans.push({ s: i, e: i + len });
+        }
+        from = i + len;
+      }
+    }
+    const out = [];
+    for (const r of Object.values(recOf)) {
+      let name = r.name, flipped = false;
+      if (r.neg > 0 && FI.flip && FI.flip[r.name]) { name = FI.flip[r.name]; flipped = true; }
+      const ex = out.find(x => x.name === name);
+      if (ex) { ex.score += r.score + (flipped ? 1 : 0); ex.hits += r.hits; }
+      else out.push({ name, score: r.score + (flipped ? 1 : 0), hits: r.hits, flipped });
+    }
+    out.sort((a, b) => b.score - a.score);
+    return out;
   },
 
   /* 语气强度：从重/加倍→1.5x，酌情/减半→0.6x */
   intensityOf(text) {
     let m = 1;
-    for (const w of DATA.freeIntents.boost) if (text.includes(w)) { m = 1.5; break; }
-    for (const w of DATA.freeIntents.reduce) if (text.includes(w)) { m = Math.min(m, 0.6); break; }
+    for (const w of DATA.freeIntents.boost) if (String(text).includes(w)) { m = 1.5; break; }
+    for (const w of DATA.freeIntents.reduce) if (String(text).includes(w)) { m = Math.min(m, 0.6); break; }
     return m;
   },
 
@@ -617,17 +680,166 @@ const Game = {
     return 'loyal';                                   // 朝臣用忠心
   },
 
+  personOf(id) {
+    if (!id) return null;
+    return this.npc(id) || this.heir(id) || (this.S.vassals || []).find(v => v.id === id) || null;
+  },
+
   /* 从剧情文本里找涉及的人物（静态称呼表 + 当前在册的朝臣/后宫名） */
   sceneNpcId(text) {
     let found = null, pos = Infinity;
     const all = DATA.freeIntents.npcTitles.concat(
-      (this.S ? this.S.harem.concat(this.S.courtiers) : []).map(p=>[p.name, p.id])
+      (this.S ? this.S.harem.concat(this.S.courtiers) : []).map(p => [p.name, p.id])
     );
     for (const [title, id] of all) {
       const i = String(text).indexOf(title);
       if (i >= 0 && i < pos) { pos = i; found = id; }
     }
     return found;
+  },
+
+  /* 这一幕的当事人：写作者早把它标在了数值里——被串起来最多的那个人，才是这件事的主角 */
+  principalOf(scene, ev) {
+    const weight = {};
+    const scan = list => (list || []).forEach(d => {
+      const m = String(d.k || '').match(/^npc:([^:]+):/);
+      if (m) weight[m[1]] = (weight[m[1]] || 0) + Math.abs(d.v || 1);
+    });
+    if (scene) {
+      scan(scene.free && scene.free.deltas);
+      const ch = (typeof scene.choices === 'function' ? scene.choices(this.S) : scene.choices) || [];
+      ch.forEach(c => scan(c.result && c.result.deltas));
+    }
+    if (ev) for (const k of Object.keys(ev.outcomes || {})) scan(ev.outcomes[k].deltas);
+    let best = null, bw = 0;
+    for (const id of Object.keys(weight)) if (weight[id] > bw) { bw = weight[id]; best = id; }
+    return (best && this.personOf(best)) ? best : null;
+  },
+
+  /* 玩家这句话涉及谁：以「点名」为准，其次是这一幕的当事人，最后才是文本里先出现的人 */
+  bindActors(text, ctx) {
+    ctx = ctx || {};
+    const S = this.S || {};
+    const str = String(text || '');
+    const cands = [];
+    const add = (key, person) => { if (key && key.length >= 2 && person) cands.push({ key, id: person.id, person }); };
+    for (const [title, id] of (DATA.freeIntents.npcTitles || [])) add(title, this.personOf(id));
+    const people = (S.courtiers || []).concat(S.harem || [], S.heirs || [], S.vassals || []);
+    for (const p of people) add(p.name, p);
+
+    const hits = [];
+    for (const c of cands) {
+      if (!c.person) continue;
+      const i = str.indexOf(c.key);
+      if (i < 0) continue;
+      const ex = hits.find(h => h.id === c.id);
+      if (ex) { if (i < ex.i) ex.i = i; } else hits.push({ id: c.id, person: c.person, i });
+    }
+    hits.sort((a, b) => a.i - b.i);
+
+    let main = hits[0] || null;
+    if (!main) {
+      const fbId = ctx.principalId || ctx.npcId || (ctx.fallbackText ? this.sceneNpcId(ctx.fallbackText) : null);
+      if (fbId) { const p = this.personOf(fbId); if (p) main = { id: fbId, person: p, i: -1 }; }
+    }
+    const others = hits.filter(h => !main || h.id !== main.id).slice(0, 2).map(h => h.person);
+    return {
+      mainId: main ? main.id : null,
+      main: main ? main.person : null,
+      others: others.filter(Boolean),
+      named: hits.length > 0,
+    };
+  },
+
+  /* 关系档位：同一个处置，亲近的人与疏远的人，反应不是一个味道 */
+  postureOf(person) {
+    if (!person) return 'plain';
+    if (person.tag === 'heir') return 'close';
+    const f = (person.favor !== undefined) ? 'favor' : 'loyal';
+    const v = (typeof person[f] === 'number') ? person[f] : 50;
+    return v >= 80 ? 'close' : v >= 62 ? 'warm' : v >= 42 ? 'plain' : v >= 26 ? 'distant' : 'fear';
+  },
+
+  fillName(tpl, person) {
+    const pron = person ? (person.gender === '女' ? '她' : '他') : '他';
+    const pn = (person && (person.tag === 'monarch')) ? '陛下' : (person ? pron : '他');
+    return String(tpl || '').replace(/\{pron\}/g, pn)
+      .replace(/\{name\}/g, person ? person.name : '')
+      .replace(/\{role\}/g, person ? (person.role || person.rank || '') : '')
+      .replace(/\{rank\}/g, person ? (person.rank || person.role || '') : '');
+  },
+
+  /* 这个人的反应：先按「这个人」，再按「他是什么脾气」，最后才有通用口径 */
+  reactionOf(person, intentName, isMain) {
+    const FI = DATA.freeIntents || {};
+    const name = person ? person.name : '';
+    const pol = (intentName && FI.polarity && FI.polarity[intentName]) || 'neutral';
+    let line = null;
+
+    if (intentName === 'tease' || intentName === 'affection') {
+      const tr = FI.teaseReacts || {};
+      const pool = tr[person.id] || (person.persona ? tr['_' + person.persona] : null);
+      if (pool) line = this.fillName(this.rand(pool), person);
+    }
+    if (!line) {
+      const r = (FI.reacts || {})[person.id] || {};
+      if (r[pol]) line = this.fillName(this.rand(r[pol]), person);
+    }
+    if (!line && person.persona) {
+      const pr = (FI.personaReacts || {})[person.persona] || {};
+      if (pr[pol]) line = this.fillName(this.rand(pr[pol]), person);
+    }
+    if (!isMain) {
+      const w = (FI.witness && FI.witness[pol]) || (FI.witness && FI.witness.neutral) || [];
+      return w.length ? '' + this.fillName(this.rand(w), person) : '';
+    }
+    if (!line) {
+      const fallback = (FI.witness && FI.witness[pol]) || [];
+      line = fallback.length ? this.fillName(this.rand(fallback), person) : '';
+    }
+    if (!line) return '';
+    const band = this.postureOf(person);
+    const pre = this.fillName(this.rand((FI.posture && FI.posture[band]) || ['']), person);
+    return '' + pre + line;
+  },
+
+  /* 眼前这件事到底是什么：先认场景自家标签，再从文本里推 */
+  topicOf(actionId, text) {
+    const t = String(text || '');
+    if (actionId === 4) return '后宫';
+    if (actionId === 11) return '教导';
+    if (actionId === 7) return '暗查';
+    if (actionId === 9) return '出巡';
+    if (actionId === 2) return '面议';
+    const sceneTopic = (DATA.sceneTopic || {});
+    const m = t.match(/id:'([a-z_]+)'/);
+    if (m && sceneTopic[m[1]]) return sceneTopic[m[1]];
+    for (const [topic, words] of (DATA.topicRules || [])) {
+      if (words.some(w => t.includes(w))) return topic;
+    }
+    return '朝政';
+  },
+
+  /* 摘要：让玩家看见我们读懂了什么（读错了也能立刻改口） */
+  understoodLine(intents, actors, mult) {
+    const FI = DATA.freeIntents || {};
+    const tags = [];
+    if (intents && intents.length) {
+      tags.push((FI.labels && FI.labels[intents[0].name]) || intents[0].name);
+      const second = intents.slice(1).find(x => x.hits > 0);
+      if (second) tags.push('兼' + ((FI.labels && FI.labels[second.name]) || second.name));
+    }
+    if (actors && actors.main) tags.push('涉：' + actors.main.name);
+    if (mult > 1) tags.push('从重');
+    if (mult < 1) tags.push('从轻');
+    return tags;
+  },
+
+  pushUnderstanding(tags) {
+    if (!tags || !tags.length) return;
+    UI.pushCard('understand',
+      `<span class="u-label">朕意已明</span>` +
+      tags.map(t => `<span class="u-tag">${t}</span>`).join(''), '');
   },
 
   /* 核心：把自由批复解读为「专属结果 + 关联数值」 */
@@ -639,60 +851,73 @@ const Game = {
     const parts = [];
     const deltas = [];
 
-    // 教导皇嗣：意图映射到皇嗣五维
+    // 教导皇嗣：意图映射到皇嗣五维（先用人物锚，皇嗣也可以被点名）
     if (ctx.kind === 'heir') {
       const hm = DATA.freeIntents.heirMap;
       if (top && hm[top.name]) {
         parts.push(this.rand(hm[top.name].lines));
-        for (const d of hm[top.name].deltas) deltas.push({...d, v: Math.round(d.v*mult)||d.v});
+        for (const d of hm[top.name].deltas) deltas.push({ ...d, v: Math.round(d.v * mult) || d.v });
       } else {
         parts.push(this.rand(DATA.freeIntents.heirFallback));
-        deltas.push({k:'_heir:zhi', v:+2, r:'耳提面命'}, {k:'_heir:xinxing', v:+1, r:'耳濡目染'});
+        deltas.push({ k: '_heir:zhi', v: +2, r: '耳提面命' }, { k: '_heir:xinxing', v: +1, r: '耳濡目染' });
       }
+      this.pushUnderstanding(this.understoodLine(intents, ctx.actors, mult));
       return { text: parts.join(''), deltas };
     }
 
+    const actors = ctx.actors || this.bindActors(text, ctx);
+    const main = actors.main;
+    const mainId = main ? main.id : null;
+    const field = mainId ? this.npcAttitudeField(mainId) : null;
+    const topic = ctx.topic || this.topicOf(ctx.actionId, ctx.sceneText || '');
+    const noun = (DATA.topicNoun || {})[topic] || DATA.topicNoun['朝政'];
+
     if (top) {
       const spec = DATA.freeIntents.deltas[top.name];
-      const field = ctx.npcId ? this.npcAttitudeField(ctx.npcId) : null;
       if (spec) {
-        for (const d of spec({ npcId: ctx.npcId || null, field })) {
+        for (const d of spec({ npcId: mainId, field })) {
           const v = Math.round(d.v * mult);
-          if (v !== 0) deltas.push({ k:d.k, v, r:d.r });
+          if (v !== 0) deltas.push({ k: d.k, v, r: d.r });
         }
       }
+      const hookPool = (DATA.freeIntents.hook || {})[top.name];
+      if (hookPool) parts.push(this.rand(hookPool).replace(/\{noun\}/g, noun));
       const pool = DATA.freeIntents.lines[top.name];
       if (pool) parts.push(this.rand(pool));
-      // 涉及人物时，按其性格给出反应（调戏有专属口径；新人按persona回退）
-      if (ctx.npcId) {
-        const person = this.npc(ctx.npcId) || {};
-        let reacts = null;
-        if (top.name === 'tease') {
-          reacts = (DATA.freeIntents.teaseReacts||{})[ctx.npcId]
-                || (person.persona ? DATA.freeIntents.teaseReacts['_'+person.persona] : null);
-        }
-        if (!reacts) {
-          const pol = DATA.freeIntents.polarity[top.name] || 'neutral';
-          reacts = ((DATA.freeIntents.reacts||{})[ctx.npcId]||{})[pol]
-                || (person.persona ? (((DATA.freeIntents.personaReacts||{})[person.persona]||{})[pol]) : null);
-        }
-        if (reacts) parts.push(this.rand(reacts));
-      }
     } else {
       parts.push(this.rand(DATA.freeIntents.lines.fallback));
-      deltas.push({k:'shouwan', v:+1, r:'临机专断，自有主张'});
+      deltas.push({ k: 'shouwan', v: +1, r: '临机专断，自有主张' });
     }
 
-    // 次级明确意图（如“处置之余，再加查访”），按半量结算
-    const second = intents.slice(1).find(x=>x.score>=2 && DATA.freeIntents.addons[x.name]);
+    // 在场人的反应：主要人物按「这个人 + 他现在的处境」说话，旁人给一句神色
+    if (actors.main) {
+      const r = this.reactionOf(actors.main, top ? top.name : null, true);
+      if (r) parts.push(r);
+    }
+    if (actors.others && actors.others.length) {
+      const pol = (top && DATA.freeIntents.polarity[top.name]) || 'neutral';
+      const w = actors.others.map(o => this.reactionOf(o, null, false)).filter(Boolean);
+      if (w.length) parts.push(w.join(''));
+      for (const o of actors.others) {
+        if (o.tag === 'heir') continue;
+        const f = (o.favor !== undefined) ? 'favor' : 'loyal';
+        const v = pol === 'positive' ? Math.round(2 * mult) : pol === 'negative' ? -Math.round(2 * mult) : 0;
+        if (v !== 0) deltas.push({ k: `npc:${o.id}:${f}`, v, r: '旁观在心' });
+      }
+    }
+
+    // 次级明确意图（如"处置之余，再加查访"），按半量结算
+    const second = intents.slice(1).find(x => x.score >= 2 && DATA.freeIntents.addons[x.name]);
     if (second) {
       const add = DATA.freeIntents.addons[second.name];
       parts.push(add.text);
       for (const d of add.deltas) {
         const v = Math.round(d.v * 0.5 * mult);
-        if (v !== 0) deltas.push({ k:d.k, v, r:d.r });
+        if (v !== 0) deltas.push({ k: d.k, v, r: d.r });
       }
     }
+
+    this.pushUnderstanding(this.understoodLine(intents, actors, mult));
     return { text: parts.join(''), deltas };
   },
 
@@ -752,11 +977,20 @@ const Game = {
     input = (input||'').trim();
     if (!input) { UI.toast('请写下你的处置，此事不可回避。'); return; }
 
-    // 关键词判定
-    let tendency = 'ignore', best = 0;
-    for (const [t, words] of Object.entries(DATA.resolveKeywords)) {
-      const score = words.filter(w=>input.includes(w)).length;
-      if (score > best) { best = score; tendency = t; }
+    // 先看以为:先用意图层读懂这句话，再退回事先的关键词表
+    const intents = this.analyzeIntent(input);
+    const start = {
+      punish:'tough', force:'tough', cold:'tough', threaten:'tough',
+      lenient:'soft', comfort:'soft', reward:'soft', money:'soft', grant:'soft', affection:'soft',
+      discuss:'investigate', delay:'ignore',
+    };
+    let tendency = start[intents.length ? intents[0].name : ''] || null;
+    if (!tendency) {
+      tendency = 'ignore'; let best = 0;
+      for (const [t, words] of Object.entries(DATA.resolveKeywords)) {
+        const score = words.filter(w => input.includes(w)).length;
+        if (score > best) { best = score; tendency = t; }
+      }
     }
     const oc = ev.outcomes[tendency] || ev.outcomes.ignore;
     const mult = this.intensityOf(input);
@@ -765,13 +999,46 @@ const Game = {
     // 主结果数值：按语气强度缩放（“从重/加倍”1.5x，“酌情/减半”0.6x）
     const mainDeltas = oc.deltas.map(d => mult===1 ? d : {...d, v:(Math.round(d.v*mult)||d.v)});
     let chips = this.applyDeltas(mainDeltas);
+    let extraText = '';
+
+    // 涉事之人：你在处置里点了谁的名，谁才该有自己的反应；
+    // 没点名时，由这件事本身的主角来应这一句——但数值仍照作者写好的走，不越权加码
+    const principalId = this.principalOf(null, ev);
+    const actors = this.bindActors(input, { principalId, fallbackText: ev.text });
+    const asIntent0 = { tough:'punish', soft:'lenient', investigate:'investigate', ignore:'delay' }[tendency] || 'delay';
+    const coveredIds = (oc.deltas || []).map(d => String(d.k || '').split(':')[1]).filter(Boolean);
+    let asIntent = asIntent0;
+    if (actors.main) {
+      // 这个人在这条路上是得了还是亏了，决定他用什么语气回你：主帅被夺了兵权不该笑，被派去打仗也不该哭
+      const net = (oc.deltas || []).reduce((s, d) => {
+        const m = String(d.k || '').match(/^npc:([^:]+):(loyal|favor|attach)$/);
+        if (m && m[1] === actors.main.id) s += Number(d.v) || 0;
+        return s;
+      }, 0);
+      asIntent = net > 0 ? 'lenient' : net < 0 ? 'punish' : (tendency === 'investigate' ? 'investigate' : 'delay');
+    }
+    if (actors.main) {
+      const r = this.reactionOf(actors.main, asIntent, true);
+      if (r) extraText += '<br>' + r;
+      if (actors.named && coveredIds.indexOf(actors.main.id) < 0 && actors.main.tag !== 'heir') {
+        const f = (actors.main.favor !== undefined) ? 'favor' : 'loyal';
+        const v = tendency==='soft' ? Math.round(3*mult) : tendency==='tough' ? -Math.round(3*mult)
+                : tendency==='investigate' ? -Math.round(1*mult) : 0;
+        if (v !== 0) chips = chips.concat(this.applyDeltas([{ k:`npc:${actors.main.id}:${f}`, v, r:'此事关他' }]));
+      }
+    }
+    const witnesses = actors.named
+      ? actors.others.map(o => this.reactionOf(o, asIntent, false)).filter(Boolean)
+      : [];
+    if (witnesses.length) extraText += '<br>' + witnesses.join('');
+
+    this.pushUnderstanding(this.understoodLine(intents, actors, mult));
 
     // 附加意图：你的措辞里超出主倾向的明确安排（如从严之外又命查访）
     const covered = { tough:['punish','force'], soft:['lenient','grant','comfort'], investigate:['investigate'], ignore:['delay'] }[tendency];
-    const extras = this.analyzeIntent(input)
+    const extras = intents
       .filter(x=>!covered.includes(x.name) && DATA.freeIntents.addons[x.name])
       .slice(0,2);
-    let extraText = '';
     for (const ex of extras) {
       const add = DATA.freeIntents.addons[ex.name];
       extraText += '<br>' + add.text;
@@ -943,12 +1210,15 @@ const Game = {
       const s = (c.keys||[]).filter(w=>text.includes(w)).length;
       if (s > bs) { bs = s; best = c; }
     }
-    if (best && (bs >= 2 || (bs >= 1 && text.length <= 6))) {
-      this.answerPetition(best.result, `「${text}」`);
+    if (best && (bs >= 3 || (bs >= 2 && text.length <= 6))) {
+      this.pushUnderstanding(this.understoodLine(this.analyzeIntent(text), null, this.intensityOf(text)));
+      this.answerPetition(this.shapeChoiceResult(best.result, text, null, best.keys || [], this.intensityOf(text)), `「${text}」`);
       return;
     }
-    const npcId = (DATA.freeIntents.petitionNpc||{})[p.id] || this.sceneNpcId(p.text);
-    const dyn = this.interpretFree(text, { npcId, kind:'petition' });
+    const ptext = typeof p.text === 'function' ? p.text(this.S) : p.text;
+    const npcId = (DATA.freeIntents.petitionNpc || {})[p.id] || this.sceneNpcId(ptext);
+    const actors = this.bindActors(text, { npcId, principalId: this.principalOf({ choices: p.choices, free: p.free }), fallbackText: ptext });
+    const dyn = this.interpretFree(text, { npcId, kind: 'petition', actors, sceneText: ptext, topic: this.topicOf(1, ptext) });
     this.answerPetition(dyn, `「${text}」`);
   },
 
